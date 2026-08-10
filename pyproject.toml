@@ -1,0 +1,19 @@
+[project]
+name = "BilbyFlow"
+version = "1.0.1"
+authors = [
+  { name="Liam Pinchbeck", email="lcpinchbeck@gmail.com" },
+]
+description = "A fast and efficient package built with Bilby design principles for gravitational wave neural posterior estimation"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/LiamCPinchbeck/BilbyFlow"
+Issues = "https://github.com/LiamCPinchbeck/BilbyFlow/issues"
