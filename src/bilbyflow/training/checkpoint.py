@@ -3,8 +3,8 @@ bilbyflow.training.checkpoint — does checkpointing.
 
 best_state is FLOW-ONLY (to save space there is no aux head, no embedding-consistency state), 
 so a checkpoint SHOULD BE (user experience may vary) directly loadable by the reweighting path via
-nn.flow.reconstruct_from_checkpoint. aux_names / aux_n_channels are recorded
-so a resumed run can decide whether the saved aux head is still compatible.
+nn.flow.reconstruct_from_checkpoint. 
+aux_names / aux_n_channels are recorded so a resumed run can decide whether the saved aux head is still compatible.
 """
 
 import torch

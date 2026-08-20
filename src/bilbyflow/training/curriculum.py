@@ -5,6 +5,11 @@ Each stage caps the maximum luminosity distance (equivalently, restricts to
 the louder end of the SNR distribution) and introduces fainter, more distant
 signals later. Explicit curriculum_stages in the config override the single
 full-range default.
+
+The point of the curriculum is to get the embedding and flow to understand 
+salient features of the waveforms before being overwhelmed by noise. Later
+versions of BilbyFlow may change this dynamic in favour of SNR thresholding 
+or SNR-weighted loss objectives.
 """
 
 __all__ = ["build_curriculum_stages"]
