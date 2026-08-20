@@ -1,8 +1,4 @@
 # ── BilbyFlow training config v4.0 ─────────────────────────────────────────
-# Strategy: every extrinsic with analytic likelihood structure that we do NOT
-# need the flow to model is a NUISANCE parameter -- the flow implicitly
-# marginalizes it, and the reweighting target marginalizes it EXACTLY
-# (synthetic_phase.py). Flow output: 12 parameters.
 
 output_prefix: big_data/PSD_conditioned/psd_cond
 embedding_type: conv1d_resnet
@@ -20,9 +16,9 @@ sampling_frequency: 2048
 
 batch_size: 4096            # EFFECTIVE batch -- optimisation semantics unchanged
 micro_batch_size: 2048       # per-forward size. P100 16GB: start 128, try 256 if
-                            # nvidia-smi shows headroom. A100: set = batch_size (no accum).
+                            
 val_eval_chunk: 512         # val NLL chunk; val tensors now stay on CPU (E2)
-fft_complex64: true      # G5 switch -- but start false until the diagnostics check passes
+fft_complex64: true      
 consistency_chunk: 256     # was 4096 -- transfer/memory guard on 16GB
 prefetch_factor: 4
 num_workers: 16             # raise toward (cores - 2) if CPU isn't already pegged
@@ -33,9 +29,8 @@ unique_analysis_identifier: Conv1D_ResNet18_v4_ABC_test_1
 dL_param: 'log'        # flow models ln(dL): homoscedastic width (sigma_lnD ~ 1/rho)
 dL_train_alpha: -1     # TRAINING proposal only (physical prior stays alpha=2 in
                        # make_prior_dict; IS weights correct the reshape).
-                       # -1 = log-uniform: equal proposal mass per dL decade ->
                        # more loud-end coverage, where efficiency dies.
-Mc_param: 'linear'
+Mc_param: 'linear'     # option for 'log', but A/B testing still ongoing for whether this improves anything
 Mc_train_alpha: 0
 
 n_standardisation: 20000
@@ -59,8 +54,7 @@ t_max: 200
 ref_geocent_time: 1126259462.4
 f_min: 20
 
-# flow capacity (num_bins: sbi default is 10; 24 sharpens high-SNR spline
-# resolution. hidden 512 = user-validated.)
+# flow capacity (num_bins: sbi default is 10)
 hidden_features: 512
 num_transforms: 64
 num_bins: 24
@@ -99,11 +93,7 @@ nuisance_parameters:
 noise_data_dir: /fred/oz233/lpinchbe/BilbyFlow/NoiseGPStuff/noise_data
 
 notes:
-- v4.0 12-param flow; phase+psi+tc exact-marginalized in the reweighting target
-- gaussian_physical training noise matches the real-data whitened-noise
-  statistics (var ~ window_factor ~ 0.937 + Tukey neighbour-bin correlation)
-  AND the bilby Gaussian-Whittle target -- removes the train/target noise-model
-  gap of gaussian_whitened without the IS penalty of real segments.
+- Clean Run
 
 priors:
   a_1:    {min: 0.0, max: 0.99, type: uniform}
