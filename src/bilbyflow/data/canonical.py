@@ -3,12 +3,11 @@ bilbyflow.data.canonical — single source of truth for strain -> x conversion.
 
 Every path that builds an x vector for the flow (training __getitem__,
 real-event reweighting, injection reweighting, era tests) MUST produce
-identical x for identical (signal_fd, noise_fd, PSD).
+identical x for identical (signal_fd, noise_fd, PSD). This module holds the
+canonical primitives; import them instead of reimplementing whitening /
+windowing / PSD estimation / channel-packing.
 
-This module holds the canonical primitives; (mostly a note for me (Liam))
-import them instead of reimplementing whitening / windowing / PSD estimation / channel-packing.
-
-Training conventions (from OnTheFlyGWDataset.__getitem__):
+Training conventions (authoritative, from OnTheFlyGWDataset.__getitem__):
   - Signal:  bilby FD -> window_fd (mask sub-f_min, then irfft->tukey->rfft)
              -> divide by bn -> noiseless whitened signal
   - Noise (gaussian_physical): white FD -> * bn -> window_fd -> / bn
@@ -25,7 +24,6 @@ Training conventions (from OnTheFlyGWDataset.__getitem__):
     Tukey window, linear detrend, median average, interpolated onto the
     analysis grid with inf below f_min / at non-finite or non-positive bins
 
-    
 Noise realisations and the signal+noise combiner live in data.noise; this
 module is deterministic (no RNG). canonical_grid is an alias of
 io.config.grid_quantities so the grid has one definition.
@@ -38,13 +36,12 @@ from scipy.signal.windows import tukey as _tukey
 
 from ..io.config import grid_quantities as canonical_grid
 
-# Yes it's quite a lot... will rework later
 __all__ = [
     "window_fd", "whitened_fd_to_channels", "whiten_fd", "var_q_of",
     "AMP_NAMES", "N_AMP", "compute_amp_context",
     "canonical_grid", "canonical_tukey", "canonical_welch_window",
     "canonical_td_norm", "canonical_bn", "canonical_valid_mask",
-    "welch_psd",
+    "welch_psd", "welch_psd_floored",
     "signal_to_whitened", "build_x_strain", "build_x_full",
     "canonical_psd_context",
     "real_strain_to_x",
@@ -161,6 +158,31 @@ def welch_psd(strain, cfg, g, exclude=None):
         print(f"  ** suspect PSD: min in-band {finite.min():.2e} "
               f"(check noise file, will whiten-blow-up)")
     return psd
+
+
+def welch_psd_floored(strain, cfg, g, floor_factor=5.0):
+    """Welch PSD on the analysis grid WITHOUT the f_min inf-mask, with an
+    in-band ASD floor at median/floor_factor instead — the convention shared
+    by the noise-segment bank and the real-event PSD (their PSDs also feed
+    the PSD context, so sub-f_min bins keep finite values; training only
+    whitens at masked bins).
+    """
+    sr, f_min, freq_array = g["sr"], g["f_min"], g["freq_array"]
+    nperseg = int(g["duration"] * sr)
+    freqs_w, psd_w = welch(np.asarray(strain, dtype=np.float64), fs=sr,
+                           nperseg=nperseg, noverlap=nperseg // 2,
+                           window=canonical_welch_window(cfg),
+                           detrend="linear", average="median")
+    psd = interp1d(freqs_w, psd_w, bounds_error=False,
+                   fill_value=np.inf)(freq_array).astype(np.float64)
+    psd[~np.isfinite(psd) | (psd <= 0)] = np.inf
+    asd = np.sqrt(psd)
+    finite = np.isfinite(asd) & (asd > 0)
+    in_band = freq_array >= f_min
+    med = np.nanmedian(np.where(finite & in_band, asd, np.nan))
+    floor = med / floor_factor
+    asd = np.where(finite & (asd < floor) & in_band, floor, asd)
+    return asd ** 2
 
 
 # ── v4.4 observable amplitude context ────────────────────────────────────────

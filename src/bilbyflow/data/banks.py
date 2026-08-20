@@ -35,7 +35,7 @@ from tqdm import tqdm
 
 from ..coordinates.sky import radec_to_detector
 from ..inference.priors import make_prior_dict
-from .canonical import canonical_welch_window, _highpass
+from .canonical import welch_psd_floored, _highpass
 
 __all__ = [
     "D_REF", "precompute_waveforms",
@@ -257,23 +257,11 @@ def precompute_sky_bank(cfg, n_sky=1_000_000):
 # ── real-noise segment bank ──────────────────────────────────────────────────
 
 def _noise_file_psd(strain, cfg, sr, n_td, freq_array, in_band, floor_factor):
-    """One noise file's PSD on the analysis grid: canonical Welch settings,
-    NO f_min inf-masking (see module docstring), in-band ASD floor at
-    median/floor_factor."""
-    from scipy.signal import welch
-    from scipy.interpolate import interp1d
-    fw, pw = welch(strain, fs=sr, nperseg=n_td, noverlap=n_td // 2,
-                   window=canonical_welch_window(cfg), detrend="linear",
-                   average="median")
-    psd = interp1d(fw, pw, bounds_error=False,
-                   fill_value=np.inf)(freq_array).astype(np.float64)
-    psd[~np.isfinite(psd) | (psd <= 0)] = np.inf
-    asd = np.sqrt(psd)
-    finite = np.isfinite(asd) & (asd > 0)
-    med = np.nanmedian(np.where(finite & in_band, asd, np.nan))
-    floor = med / floor_factor
-    asd = np.where(finite & (asd < floor) & in_band, floor, asd)
-    return asd ** 2
+    """One noise file's PSD on the analysis grid — canonical floored recipe
+    (no f_min inf-mask; see module docstring)."""
+    g = dict(sr=sr, f_min=float(cfg["f_min"]), duration=float(cfg["duration"]),
+             freq_array=freq_array)
+    return welch_psd_floored(strain, cfg, g, floor_factor=floor_factor)
 
 
 def _load_noise_files(noise_data_dir, era_dirs, cfg, sr, n_td, margin,
