@@ -2,18 +2,21 @@
 bilbyflow.data.psd — PSD bank construction for on-the-fly whitening.
 
 One builder in active use:
-  precompute_psd_bank_from_segments — Welch estimates from noise segments
-                                      (Tukey window, segment-matched, median
-                                      average), era-balanced, with a
-                                      per-frequency median-ASD floor.
+  precompute_psd_bank_from_segments — Welch estimates from noise segments,
+                                      era-balanced, with a per-frequency
+                                      median-ASD floor. All Welch conventions
+                                      route through canonical.welch_psd.
 
 precompute_psd_bank (GP sampling) is retired: GP-sampled PSDs are smooth and
-lineless and never captured the detail needed. Kept as a stub so old configs fail loudly.
+lineless and never captured the detail needed. The name is kept as a stub so
+old configs fail loudly instead of importing-then-crashing.
 """
 
 import os
 import glob
 import numpy as np
+
+from .canonical import welch_psd
 
 __all__ = ["precompute_psd_bank", "precompute_psd_bank_from_segments"]
 
@@ -24,21 +27,20 @@ _BANK_SEED = 42
 
 
 def _freq_grid(cfg):
-    """(freq_array, df, n_fd, f_min, sr, duration) from the config."""
+    """Grid dict (welch_psd-compatible) from the config."""
     duration = float(cfg["duration"])
     sr = int(cfg["sampling_frequency"])
-    f_min = float(cfg["f_min"])
     n_fd = int(duration * sr / 2) + 1
     freq_array = np.arange(n_fd) / duration
-    return freq_array, 1.0 / duration, n_fd, f_min, sr, duration
+    return dict(duration=duration, sr=sr, f_min=float(cfg["f_min"]),
+                n_fd=n_fd, freq_array=freq_array, df=1.0 / duration)
 
 
-
-def _segment_psds(fp, sr, nperseg, window, freq_array, f_min):
-    """All Welch PSD estimates from one noise file, interpolated onto
-    freq_array with inf outside band / at bad bins. Returns a list."""
-    from scipy.signal import welch
-    from scipy.interpolate import interp1d
+def _segment_psds(fp, cfg, g):
+    """All Welch PSD estimates from one noise file, on the analysis grid.
+    Returns a list (possibly empty)."""
+    sr = g["sr"]
+    nperseg = int(g["duration"] * sr)
 
     stored = np.load(fp, allow_pickle=True)
     if int(round(1.0 / float(stored[1]))) != sr:
@@ -58,22 +60,13 @@ def _segment_psds(fp, sr, nperseg, window, freq_array, f_min):
             sub = strain[start:start + n_win]
             if len(sub) < nperseg:
                 continue
-            fw, pw = welch(sub, fs=sr, nperseg=nperseg,
-                           noverlap=nperseg // 2, window=window,
-                           detrend="linear", average="median")
-            if np.any(~np.isfinite(pw)) or np.any(pw <= 0):
-                continue
-            psd = interp1d(fw, pw, bounds_error=False,
-                           fill_value=np.inf)(freq_array)
-            psd[(freq_array < f_min) | ~np.isfinite(psd) | (psd <= 0)] = np.inf
-            out.append(psd)
+            psd = welch_psd(sub, cfg, g)
+            if np.isfinite(psd[g["freq_array"] >= g["f_min"]]).any():
+                out.append(psd)
     return out
 
 
-
-
-def _collect_raw_psds(noise_data_dir, era_dirs, sr, nperseg, window,
-                      freq_array, f_min):
+def _collect_raw_psds(noise_data_dir, era_dirs, cfg, g):
     """{era: {det: [psd, ...]}} over every noise file of every era."""
     raw = {era: {"H1": [], "L1": []} for era in era_dirs}
     for era in era_dirs:
@@ -85,8 +78,7 @@ def _collect_raw_psds(noise_data_dir, era_dirs, sr, nperseg, window,
                 continue
             for fp in files:
                 try:
-                    raw[era][det] += _segment_psds(
-                        fp, sr, nperseg, window, freq_array, f_min)
+                    raw[era][det] += _segment_psds(fp, cfg, g)
                 except Exception as e:
                     print(f"  WARNING: {fp}: {e}")
         print(f"  {era}: {len(raw[era]['H1'])} H1, "
@@ -94,11 +86,8 @@ def _collect_raw_psds(noise_data_dir, era_dirs, sr, nperseg, window,
     return raw
 
 
-
-
 def _era_counts(n_psds, valid_eras, era_weights):
     """PSDs per era: weighted when era_weights is given, else balanced."""
-    
     if era_weights:
         w = np.array([float(era_weights.get(e, 0.0)) for e in valid_eras])
         if w.sum() <= 0:
@@ -113,11 +102,8 @@ def _era_counts(n_psds, valid_eras, era_weights):
     return counts
 
 
-
-
 def _apply_asd_floor(bank, in_band, factor, det_name):
     """Raise per-frequency ASDs below median/factor to the floor, in place."""
-
     asd = np.sqrt(bank)
     finite_in = np.isfinite(asd[:, in_band]) & (asd[:, in_band] > 0)
     asd_median = np.nanmedian(
@@ -133,26 +119,17 @@ def _apply_asd_floor(bank, in_band, factor, det_name):
     bank[:] = np.where(low, fb, asd) ** 2
 
 
-
-#TODO: Lots of print statements, should integrate into a logger
 def precompute_psd_bank_from_segments(cfg, noise_data_dir):
-    """Estimate PSDs directly from all noise segments (Welch, segment-matched
-    Tukey window, median average), era-balanced, with a per-frequency
-    median-ASD floor to prevent whitening blow-up."""
-
-
+    """Estimate PSDs directly from all noise segments (canonical Welch
+    conventions), era-balanced, with a per-frequency median-ASD floor to
+    prevent whitening blow-up."""
     bank_cfg = cfg.get("psd_bank", {})
     n_psds = int(bank_cfg.get("n_psds", 5000))
     eras_filter = bank_cfg.get("eras", None)
     asd_floor_factor = float(bank_cfg.get("asd_floor_factor", 5.0))
 
-
-
-    freq_array, df, n_fd, f_min, sr, duration = _freq_grid(cfg)
-    nperseg = int(duration * sr)
-    roll_off = float(cfg.get("tukey_roll_off", 0.2))
-    # matches bilby's Tukey convention; alpha = 2*roll_off/duration
-    window = ("tukey", 2.0 * roll_off / duration)
+    g = _freq_grid(cfg)
+    freq_array, n_fd = g["freq_array"], g["n_fd"]
 
     era_dirs = sorted(d for d in os.listdir(noise_data_dir)
                       if os.path.isdir(os.path.join(noise_data_dir, d))
@@ -165,8 +142,7 @@ def precompute_psd_bank_from_segments(cfg, noise_data_dir):
     print(f"  Eras {era_dirs} | n_psds {n_psds} | "
           f"asd_floor_factor {asd_floor_factor}")
 
-    raw = _collect_raw_psds(noise_data_dir, era_dirs, sr, nperseg, window,
-                            freq_array, f_min)
+    raw = _collect_raw_psds(noise_data_dir, era_dirs, cfg, g)
     valid_eras = [e for e in era_dirs if raw[e]["H1"] and raw[e]["L1"]]
     if not valid_eras:
         raise RuntimeError("No eras have both H1 and L1 PSDs")
@@ -175,12 +151,9 @@ def precompute_psd_bank_from_segments(cfg, noise_data_dir):
     counts = _era_counts(n_psds, valid_eras, bank_cfg.get("era_weights"))
 
     rng = np.random.default_rng(_BANK_SEED)
-
     psd_H1 = np.empty((n_psds, n_fd))
     psd_L1 = np.empty((n_psds, n_fd))
-
     era_labels = np.empty(n_psds, dtype=object)
-
     idx = 0
     for era, n_this in zip(valid_eras, counts):
         n_this = int(n_this)
@@ -190,23 +163,15 @@ def precompute_psd_bank_from_segments(cfg, noise_data_dir):
         era_labels[idx:idx + n_this] = era
         idx += n_this
         print(f"  {era}: sampled {n_this} PSDs")
-
     assert idx == n_psds, f"Filled {idx} but expected {n_psds}"
 
-    in_band = freq_array >= f_min
+    in_band = freq_array >= g["f_min"]
     _apply_asd_floor(psd_H1, in_band, asd_floor_factor, "H1")
     _apply_asd_floor(psd_L1, in_band, asd_floor_factor, "L1")
 
     perm = rng.permutation(n_psds)
-    return {
-        "psd_H1":psd_H1[perm], 
-        "psd_L1":psd_L1[perm],
-        "era":era_labels[perm], 
-        "freq_array":freq_array, 
-        "df":df
-        }
-
-
+    return dict(psd_H1=psd_H1[perm], psd_L1=psd_L1[perm],
+                era=era_labels[perm], freq_array=freq_array, df=g["df"])
 
 
 def precompute_psd_bank(cfg, gp_dir):
