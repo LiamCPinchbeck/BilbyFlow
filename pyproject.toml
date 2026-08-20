@@ -1,19 +1,48 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "BilbyFlow"
+name = "bilbyflow"
 version = "1.0.1"
 authors = [
-  { name="Liam Pinchbeck", email="lcpinchbeck@gmail.com" },
+  { name = "Liam Pinchbeck", email = "lcpinchbeck@gmail.com" },
 ]
 description = "A fast and efficient package built with Bilby design principles for gravitational wave neural posterior estimation"
 readme = "README.md"
-requires-python = ">=3.9"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-]
+requires-python = ">=3.10" # currently testing to see if this can be loosened
 license = "MIT"
-license-files = ["LICEN[CS]E*"]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "torch>=2.0",
+    "sbi>=0.22",
+    "bilby>=2.1",
+    "matplotlib>=3.7",
+    "corner>=2.2",
+    "arviz>=0.15",
+    "pyyaml>=6.0",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+pesummary = ["pesummary>=0.13"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+bilbyflow-train = "bilbyflow.scripts.train:main"
+bilbyflow-reweight-real = "bilbyflow.scripts.reweight_real:main"
+bilbyflow-reweight-injections = "bilbyflow.scripts.reweight_injections:main"
+bilbyflow-era-test = "bilbyflow.scripts.era_test:main"
+bilbyflow-diagnostics = "bilbyflow.scripts.diagnostics:main"
 
 [project.urls]
 Homepage = "https://github.com/LiamCPinchbeck/BilbyFlow"
 Issues = "https://github.com/LiamCPinchbeck/BilbyFlow/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+#[project.entry-points."bilby.samplers"]
+#bilbyflow = "bilbyflow.plugin:BilbyFlow"
