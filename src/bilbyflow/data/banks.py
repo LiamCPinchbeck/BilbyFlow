@@ -82,6 +82,7 @@ def _wf_worker_init(cfg):
 def _wf_worker_chunk(params_chunk):
     ref_tc = _wf_worker_chunk._ref_tc
     hps, hcs, stored_list = [], [], []
+
     for sampled in params_chunk:
         params = dict(sampled)
         params["geocent_time"] = ref_tc
@@ -98,14 +99,17 @@ def _wf_worker_chunk(params_chunk):
         hps.append(hp.astype(np.complex64))
         hcs.append(hc.astype(np.complex64))
         stored_list.append({p: float(sampled[p]) for p in sampled})
+
     return hps, hcs, stored_list
 
 
 def _training_mc_prior(cfg, priors):
     """Apply the training-side Mc pad / proposal reshape (physical pi
     unchanged). Mutates `priors` in place."""
+
     _pr = cfg["priors"]["chirp_mass"]
-    # Motivated by "Don't Cut Corners": slightly pad the parameter space to
+
+    # Motivated by "Don't Cut Corners", we slightly pad the parameter space to
     # avoid edge effects and give more diverse training
     _pad = ((cfg.get("training_prior_pad", {}) or {})
             .get("chirp_mass", {}) or {})
@@ -276,13 +280,21 @@ def _load_noise_files(noise_data_dir, era_dirs, cfg, sr, n_td, margin,
                       freq_array, in_band, floor_factor, f_hp):
     """(file_strain, file_psd, file_era) per detector over every usable
     noise file: sr/finite/length checks, highpass, per-file PSD."""
+
     file_strain = {"H1": [], "L1": []}
     file_psd = {"H1": [], "L1": []}
     file_era = {"H1": [], "L1": []}
+
     for era in era_dirs:
+
         for det in ["H1", "L1"]:
-            for fp_ in sorted(glob.glob(os.path.join(
-                    noise_data_dir, era, f"*_{det}_noise.npy"))):
+
+            for fp_ in sorted(
+                glob.glob(
+                    os.path.join(noise_data_dir, 
+                                 era, 
+                                 f"*_{det}_noise.npy"
+                        ))):
                 try:
                     stored = np.load(fp_, allow_pickle=True)
                     dt_s = float(stored[1])
@@ -313,6 +325,7 @@ def precompute_noise_segment_bank(cfg, noise_data_dir):
     """Real detector-noise segments + per-file PSDs for noise_source="real"
     and embedding consistency. Each segment records its file's PSD row so
     training whitens it with the SAME PSD the real path would use."""
+
     bank_cfg = cfg.get("noise_segment_bank", {}) or {}
     n_segments = int(bank_cfg.get("n_segments", 50000))
     eras_filter = bank_cfg.get("eras", None)
@@ -321,9 +334,11 @@ def precompute_noise_segment_bank(cfg, noise_data_dir):
     asd_floor_factor = float(cfg.get("psd_bank", {})
                              .get("asd_floor_factor", 5.0))
 
+
     duration = float(cfg["duration"])
     sr = int(cfg["sampling_frequency"])
     f_min = float(cfg["f_min"])
+
     n_fd_full = int(duration * sr / 2) + 1
     n_td = 2 * (n_fd_full - 1)
     freq_array = np.arange(n_fd_full) / duration
@@ -333,6 +348,7 @@ def precompute_noise_segment_bank(cfg, noise_data_dir):
     era_dirs = sorted(d for d in os.listdir(noise_data_dir)
                       if os.path.isdir(os.path.join(noise_data_dir, d))
                       and (eras_filter is None or d in eras_filter))
+
     if not era_dirs:
         raise RuntimeError(f"No era directories in {noise_data_dir} "
                            f"(filter {eras_filter})")
