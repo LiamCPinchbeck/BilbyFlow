@@ -18,6 +18,7 @@ inference.sample corrects proposal-vs-target, so this stays the physical prior.
 
 import numpy as np
 import bilby
+from ..coordinates.sky import MAX_DT_HL
 
 __all__ = ["make_prior_dict", "dL_bounds", "make_injection_priors",
            "sky_prior_log_terms"]
@@ -59,6 +60,14 @@ def make_injection_priors(cfg, tc_gps, mode="physical", max_inj_dL=5000.0):
 
     return priors
 
+def detector_to_radec_log_jacobian(samples, inferred_parameters, tc):
+    """log|d(dt_HL, phi_det)/d(ra, dec)| = log(MAX_DT_HL * |cos(dec)|).
+    The (ra,dec)->(theta,phi) rotation is area-preserving on the sphere and
+    the sin(theta) factors cancel, leaving only the dt stretch and the
+    dec-colatitude factor. `samples` holds physical (ra, dec) columns."""
+    dec = np.asarray(samples[:, inferred_parameters.index("dec")], dtype=float)
+    return np.log(MAX_DT_HL) + np.log(np.abs(np.cos(dec)) + 1e-300)
+
 
 def sky_prior_log_terms(mode, npe_samples, sample_dicts, priors, cfg, tc_gps):
     """explicit sky-prior convention for the IS weights. 
@@ -74,14 +83,7 @@ def sky_prior_log_terms(mode, npe_samples, sample_dicts, priors, cfg, tc_gps):
     if mode == "detector-uniform":
         return np.zeros(n)
 
-    if mode == "isotropic":
-        try:
-            from ..coordinates.sky import detector_to_radec_log_jacobian
-        except ImportError as e:
-            raise SystemExit(
-                "--sky-prior isotropic needs detector_to_radec_log_jacobian in "
-                f"coordinates.sky (log|d(dt,phi)/d(ra,dec)|). Not found: {e}") from e
-    
+    if mode == "isotropic":    
         ra = np.array([s["ra"] for s in sample_dicts])
         dec = np.array([s["dec"] for s in sample_dicts])
     
