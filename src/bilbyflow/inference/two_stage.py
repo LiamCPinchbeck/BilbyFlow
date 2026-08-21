@@ -1,81 +1,105 @@
 """
-two_stage.py — Two-phase importance sampling with higher-mode correction.
+bilbyflow.inference.two_stage — two-phase importance sampling.
 
-Pipeline:
-  Stage 1: log w₁ = log L_{22} + log \pi - log q   (all N proposal draws)
-           Systematic resample --> ~Kish(n_eff) unique (2,2)-posterior samples
+  Stage 1  log_w1 = logL_22 + log_prior - log_q          (v6, all N draws)
+           Bernoulli thinning to ~Kish n_eff unique survivors
+  Stage 2  direct v5 HM weight on the survivors,
+           HT-corrected, PSIS-smoothed if k-hat < 0.7,
+           then rejection sample -> equal-weight unique HM samples.
 
-  Stage 2: log w_2 = log L_HM - log L_{22}         (survivors only, v5 numerics)
-           Rejection sample at w_2/max(w_2) --> equal-weight HM-corrected samples
+The combined weight is the DIRECT higher-mode weight,
+    log_w_comb = logL_HM + log_prior[idx] - log_q[idx] - log_p_thin,
+so the v6 (2,2) screen enters only through the thinning probability p_i,
+which cancels in the Horvitz-Thompson estimator. The v6-v5 (2,2) residual
+therefore never rides on the weight (see the reweighting-math note, section 8).
 
-Stage-2 denominator uses a mode_array=[[2,2],[2,-2]] deep-copied waveform
-generator with identical numerics to the HM numerator — the ratio isolates
-the pure higher-mode correction.
+Stage-2 denominator (logL_22_v5) is retained only for the dlogL diagnostic,
+computed for free from the same v5 basis (marginal_loglr_pair).
+
+single_stage_hm is the expensive reference: the same v5 HM evaluator on ALL
+samples with direct weights; its Kish is what the two-stage efficiency should
+reproduce.
 """
 
-import copy
 import time
-import multiprocessing as mp
-
 import numpy as np
+import multiprocessing as mp
 from scipy.special import logsumexp
 
+__all__ = ["two_stage_reweight", "single_stage_hm", "kish_eff",
+           "rejection_sample", "thin_indices"]
 
-# ── Pool worker state (fork semantics) ──────────────────────────────────────
+# v5 evaluator defaults, shared by both pipelines
+_V5_DEFAULTS = dict(n_basis=5, positive_harmonics=True, n_phi=64, n_psi=32,
+                    refine_fac=8, dt_res=2.5e-5)
 
+# module-level state for pool workers (fork start method)
 _V5_HM = None
-_V5_22 = None
 _DICTS = None
+_PAIR = True          # compute the (2,2)-collapse denominator too?
 
+
+
+
+# ── pool evaluation ──────────────────────────────────────────────────────────
 
 def _worker_pair(i):
-    """Evaluate (log L_HM, log L_22) for sample i on v5 numerics."""
     try:
-        lhm = float(_V5_HM.marginal_loglr(_DICTS[i]))
+        if _PAIR:
+            lhm, l22 = _V5_HM.marginal_loglr_pair(_DICTS[i])
+        else:
+            lhm, l22 = _V5_HM.marginal_loglr(_DICTS[i]), np.nan
+        return (float(lhm), float(l22))
     except (ValueError, RuntimeError):
-        lhm = -np.inf
-    try:
-        l22 = float(_V5_22.marginal_loglr(_DICTS[i]))
-    except (ValueError, RuntimeError):
-        l22 = -np.inf
-    return (lhm, l22)
+        return (-np.inf, -np.inf)
 
 
-def _pool_eval_pairs(v5_hm, v5_22, sample_dicts, idx, npool):
-    """Single pool pass returning (log L_HM, log L_22) arrays for idx."""
-    global _V5_HM, _V5_22, _DICTS
-    _V5_HM, _V5_22, _DICTS = v5_hm, v5_22, sample_dicts
+
+
+def _pool_eval_pairs(v5_hm, sample_dicts, idx, npool, pair=True):
+    """One pool pass: (logL_HM, logL_22) arrays for sample_dicts[idx].
+    pair=False skips the (2,2)-collapse grid pass (~2x); log_l_22 is NaN."""
+    global _V5_HM, _DICTS, _PAIR
+    _V5_HM, _DICTS, _PAIR = v5_hm, sample_dicts, pair
     try:
         idx_list = list(idx)
         if npool > 1 and len(idx_list) > npool:
-            chunksize = max(1, len(idx_list) // (npool * 4))
             with mp.Pool(npool) as pool:
-                out = pool.map(_worker_pair, idx_list, chunksize=chunksize)
+                out = pool.map(_worker_pair, idx_list,
+                               chunksize=max(1, len(idx_list) // (npool * 4)))
         else:
             out = [_worker_pair(i) for i in idx_list]
     finally:
-        _V5_HM = _V5_22 = _DICTS = None
+        _V5_HM = _DICTS = None
     out = np.asarray(out, dtype=np.float64)
     return out[:, 0], out[:, 1]
 
 
-# ── Resampling utilities ────────────────────────────────────────────────────
 
-def systematic_resample(log_w, n_out, rng):
-    """Systematic resampling: lower variance than multinomial. May contain
-    duplicates."""
-    lw = np.asarray(log_w, dtype=np.float64)
-    ok = np.isfinite(lw)
-    w = np.zeros(lw.shape)
-    w[ok] = np.exp(lw[ok] - logsumexp(lw[ok]))
-    cumw = np.cumsum(w)
-    cumw[-1] = 1.0
-    u = (rng.uniform() + np.arange(n_out)) / n_out
-    return np.searchsorted(cumw, u)
+# mostly for multi-processing
+def _build_v5(ifos, wfg, priors, flags, tc_gps, sp_kwargs, window_fn,
+              t_window):
+    """The v5 HM evaluator with the shared kwarg defaults applied."""
+    from .synthetic_phase import SyntheticExtrinsicLikelihood as V5
+    sk = {**_V5_DEFAULTS, **(sp_kwargs or {})}
+    sk.pop("phase_basis", None)
+    return V5(ifos, wfg, priors,
+              marg_phase=flags["phase"], marg_psi=flags["psi"],
+              marg_time=flags["geocent_time"],
+              marg_dist=flags["luminosity_distance"],
+              tc0=float(tc_gps), window_fn=window_fn, t_window=t_window,
+              **sk)
 
+
+
+
+
+# --------------------- weight utilities ---------------------
+# just does the rejection sampling
 
 def rejection_sample(log_w, rng):
-    """Accept index i with probability w_i / max(w). Returns accepted indices."""
+    """Accept i with probability w_i / max(w). Returns positions of accepted
+    entries. Uniqueness is a property of the input, not of this function."""
     lw = np.asarray(log_w, dtype=np.float64)
     ok = np.isfinite(lw)
     accept = np.zeros(lw.shape, dtype=bool)
@@ -84,8 +108,36 @@ def rejection_sample(log_w, rng):
     return np.flatnonzero(accept)
 
 
+
+
+
+def thin_indices(log_w, n_target, rng):
+    """Bernoulli thinning: keep i w.p. min(1, w_i/c), c set so E[#kept]=n_target.
+    Returns (idx, log_w_kept, log_p) with log_w_kept = log w_i - log p_i
+    (Horvitz-Thompson). Indices unique by construction; estimator unbiased."""
+    lw = np.asarray(log_w, dtype=np.float64)
+    ok = np.isfinite(lw)
+    if not ok.any():
+        return np.array([], dtype=int), np.array([]), np.array([])
+    lwn = np.full(lw.shape, -np.inf)
+    lwn[ok] = lw[ok] - logsumexp(lw[ok])
+    lo, hi = lwn[ok].min() - 50.0, lwn[ok].max()
+    for _ in range(80):                                   # bisect on log c
+        mid = 0.5 * (lo + hi)
+        n = np.exp(np.minimum(0.0, lwn[ok] - mid)).sum()
+        lo, hi = (mid, hi) if n > n_target else (lo, mid)
+    log_c = 0.5 * (lo + hi)
+    log_p = np.minimum(0.0, lwn - log_c)
+    keep = np.zeros(lw.shape, dtype=bool)
+    keep[ok] = np.log(rng.uniform(size=ok.sum())) < log_p[ok]
+    idx = np.flatnonzero(keep)
+    return idx, lwn[idx] - log_p[idx], log_p[idx]
+
+
+
+
 def kish_eff(log_w):
-    """Kish effective sample size as a percentage of finite weights."""
+    """Kish n_eff / n of finite log-weights, in percent."""
     lw = np.asarray(log_w, dtype=np.float64)
     lw = lw[np.isfinite(lw)]
     if lw.size == 0:
@@ -94,158 +146,210 @@ def kish_eff(log_w):
     return 100.0 * w.sum() ** 2 / (np.sum(w ** 2) * len(w))
 
 
-# ── Waveform generator helpers ──────────────────────────────────────────────
-
-def make_22_generator(wfg):
-    """Deep-copy a waveform generator restricted to (2,\pm 2) modes only."""
-    wfg_22 = copy.deepcopy(wfg)
-    wa = dict(getattr(wfg, "waveform_arguments", {}) or {})
-    wa["mode_array"] = [[2, 2], [2, -2]]
-    wfg_22.waveform_arguments = wa
-    return wfg_22
 
 
-# ── Main pipeline ───────────────────────────────────────────────────────────
+
+def _psis_smooth(log_w, tag, verbose):
+    """PSIS-smooth log_w when k-hat < 0.7 (needs >25 finite weights and
+    arviz). Returns (log_w_for_rejection, khat) — the input array unchanged
+    when smoothing does not apply."""
+    fin = np.isfinite(log_w)
+    if fin.sum() <= 25:
+        return log_w, None
+    try:
+        from arviz import psislw
+    except ImportError:
+        return log_w, None
+    lw_s, k = psislw(log_w[fin])
+    khat = float(k)
+    if khat < 0.7:
+        out = np.full_like(log_w, -np.inf)
+        out[fin] = np.asarray(lw_s)
+        if verbose:
+            print(f"  [{tag}] PSIS-smoothed weights (k-hat={khat:.2f})")
+        return out, khat
+    if verbose:
+        print(f"  [{tag}] k-hat={khat:.2f} >= 0.7, using raw weights")
+    return log_w, khat
+
+
+###########################################################################################
+###########################################################################################
+# ------------------------------- single-stage reference ----------------------------------
+###########################################################################################
+###########################################################################################
+
+
+def single_stage_hm(log_prior, log_draw_prob, sample_dicts,
+                    ifos, wfg, priors, flags, tc_gps,
+                    sp_kwargs=None, window_fn=None, npool=1,
+                    seed=0, verbose=True, log_l22_v6=None):
+    """Diagnostic: HM v5 marginal on ALL samples, full t_c window, direct
+    weights, single PSIS+rejection. No v6, no window narrowing. Its Kish is
+    the reference the two-stage theoretical efficiency should reproduce."""
+    rng = np.random.default_rng(seed)
+    N = len(log_prior)
+
+    v5_hm = _build_v5(ifos, wfg, priors, flags, tc_gps, sp_kwargs,
+                      window_fn, t_window=None)
+
+    if verbose:
+        print(f"  [1-stage HM] evaluating v5 HM on all {N} samples (full t_c window)")
+    t0 = time.perf_counter()
+    log_l_hm, _ = _pool_eval_pairs(v5_hm, sample_dicts, np.arange(N), npool,
+                                   pair=False)
+    t_eval = time.perf_counter() - t0
+
+    log_w = log_l_hm + np.asarray(log_prior) - np.asarray(log_draw_prob)
+    kish = kish_eff(log_w)
+    log_w_rej, khat = _psis_smooth(log_w, "1-stage HM", verbose)
+
+    _print_tail_diagnostics(log_w, log_w_rej, khat, log_l_hm, log_l22_v6)
+
+    idx_final = rejection_sample(log_w_rej, rng)
+    eff_total = 100.0 * len(idx_final) / N
+    if verbose:
+        print(f"  [1-stage HM] Kish={kish:.2f}%  accepted {len(idx_final)}/{N} "
+              f"({eff_total:.2f}%) in {t_eval:.0f}s")
+
+    return dict(idx_final=idx_final,
+                idx_stage1=np.arange(N),           # kish2*len/100 = Kish ESS
+                kish2=kish,                        # real Kish%, not 100
+                log_w_final=log_w_rej,             # WEIGHTED (full length N)
+                log_w1=log_w, log_w2=np.zeros(len(idx_final)),
+                log_l_hm=log_l_hm, log_l_22_v5=None,
+                kish1=kish, khat2=khat,
+                eff1=eff_total, eff2=100.0, eff_total=eff_total,
+                n_unique_final=len(idx_final),
+                t_stage2=t_eval, t_window=None)
+
+
+
+
+def _print_tail_diagnostics(log_w, log_w_rej, khat, log_l_hm, log_l22_v6):
+    """Single-stage tail printouts: top weights, the three n_eff notions, and
+    the v5-vs-v6 dlogL residual when the caller supplies log_l22_v6.
+    
+    As in the name, figures out how the weights are distributed and is a quick
+    diagnostic check. Preferably you would just look at the weight distribution
+    if you wanted something more robust.
+    
+    """
+
+    fin = np.isfinite(log_w)
+    lw = log_w[fin]
+    med = np.median(lw)
+    lws = np.sort(lw)[::-1]
+    print(f"  [1-stage HM] top-10 log_w - median: "
+          + " ".join(f"{v - med:+.1f}" for v in lws[:10]))
+    n_eff_kish = np.exp(2 * logsumexp(lw) - logsumexp(2 * lw))
+    n_eff_rej = np.exp(logsumexp(lw) - lw.max())          # = expected #accepted
+    print(f"  [1-stage HM] n_eff: Kish={n_eff_kish:.0f}  "
+          f"rejection(raw)={n_eff_rej:.0f}", end="")
+    if khat is not None and khat < 0.7:
+        lw2 = log_w_rej[np.isfinite(log_w_rej)]
+        print(f"  rejection(PSIS)={np.exp(logsumexp(lw2) - lw2.max()):.0f}")
+    else:
+        print()
+    if log_l22_v6 is not None:
+        d = log_l_hm - np.asarray(log_l22_v6)
+        dfin = d[np.isfinite(d)]
+        print(f"  [1-stage HM] dlogL(HM_v5 - 22_v6): med={np.median(dfin):+.2f} "
+              f"std={dfin.std():.2f} max|.-med|={np.abs(dfin - np.median(dfin)).max():.1f}")
+        top = np.argsort(log_w)[::-1][:10]
+        print(f"  [1-stage HM] top-10 weights' dlogL: "
+              + " ".join(f"{d[j] - np.median(dfin):+.1f}" for j in top))
+
+
+
+
+
+
+
+###########################################################################
+###########################################################################
+# --------------           two-stage pipeline      ------------------------
+###########################################################################
+###########################################################################
+
+# Currently not in use because of the injected noise that comes with
+    # reweighting twice. Even with the fun Horvitz-Thompson
 
 def two_stage_reweight(log_l22, log_prior, log_draw_prob, sample_dicts,
                        sp_like_v6, ifos, wfg, priors, flags, tc_gps,
                        sp_kwargs=None, window_fn=None, npool=1,
                        t_delta=15.0, seed=0, verbose=True):
-    """Two-phase IS: (2,2) reweight --> resample --> HM correction --> rejection.
+    """Full two-phase pipeline. Stage-1 logL (v6) is supplied by the caller.
 
-    Parameters
-    ----------
-    log_l22 : array (N,)
-        Stage-1 (2,2) marginal log-likelihood ratios (already evaluated).
-    log_prior, log_draw_prob : arrays (N,)
-        Target prior and proposal log-densities.
-    sample_dicts : list[dict]
-        Full parameter dictionaries for each of the N proposal draws.
-    sp_like_v6 : SyntheticExtrinsicLikelihood
-        The v6 likelihood used in stage 1 (needed for time_support).
-    ifos, wfg, priors : bilby objects
-        Interferometers, waveform generator, prior dict for v5 construction.
-    flags : dict
-        Marginalisation flags {param: bool} for extrinsic parameters.
-    tc_gps : float
-        Trigger time.
-
-    Returns
-    -------
-    dict with keys:
-        idx_stage1, idx_final, log_w1, log_w2, log_l_hm, log_l_22_v5,
-        eff1, eff2, eff_total, kish1, kish2, t_stage2, t_window,
-        n_unique_final, counts_stage1
+    Returns a dict with idx_stage1, idx_final, log_w1, log_w2, log_w_comb,
+    log_w_final, log_l_hm, log_l_22_v5, eff1/eff2/eff_total, kish1/kish2,
+    khat2, t_stage2, t_window, n_unique_final.
     """
-    from synthetic_phase_v5 import SyntheticExtrinsicLikelihood as V5
-
     rng = np.random.default_rng(seed)
     N = len(log_l22)
 
-    # ── Stage 1: systematic resample from (2,2) weights ─────────────────
+    # ── Stage 1: weights + Bernoulli thinning (unique survivors) ──
     log_w1 = np.asarray(log_l22) + np.asarray(log_prior) - np.asarray(log_draw_prob)
     kish1 = kish_eff(log_w1)
     n_target = max(int(kish1 * N / 100.0), 50)
+    idx1, lw1_kept, log_p1 = thin_indices(log_w1, n_target, rng)
 
-    idx1_raw = systematic_resample(log_w1, n_target, rng)
-    idx1, inv1, counts1 = np.unique(idx1_raw, return_inverse=True,
-                                    return_counts=True)
-
-    result = dict(log_w1=log_w1, idx_stage1=idx1, counts_stage1=counts1,
-                  idx_stage1_raw=idx1_raw, kish1=kish1,
-                  eff1=100.0 * idx1.size / N)
-
+    out = dict(log_w1=log_w1, idx_stage1=idx1,
+               counts_stage1=np.ones(idx1.size, dtype=int),
+               log_w1_kept=lw1_kept,
+               kish1=kish1, eff1=100.0 * idx1.size / N)
     if verbose:
-        print(f"  [2-stage] stage 1: systematic resample {n_target} draws -> "
-              f"{idx1.size} unique ({result['eff1']:.1f}% of N; Kish {kish1:.1f}%)")
-
+        print(f"  [2-stage] stage 1: thinned to {idx1.size} unique "
+              f"(target {n_target}; {out['eff1']:.1f}% of N; Kish {kish1:.1f}%)")
     if idx1.size == 0:
-        result.update(idx_final=idx1, log_w2=np.array([]),
-                      log_l_hm=np.array([]), log_l_22_v5=np.array([]),
-                      eff2=0.0, eff_total=0.0, kish2=0.0,
-                      t_stage2=0.0, t_window=None, n_unique_final=0)
-        return result
+        out.update(idx_final=idx1, log_w2=np.array([]),
+                   log_l_hm=np.array([]), log_l_22_v5=np.array([]),
+                   eff2=0.0, eff_total=0.0, kish2=0.0, t_stage2=0.0,
+                   t_window=None, n_unique_final=0)
+        return out
 
-    # ── Narrow the t_c window from (2,2) support ───────────────────────
-    t_window = None
-    if flags.get("geocent_time", False):
-        jmax = int(idx1[np.argmax(log_w1[idx1])])
-        t_window = sp_like_v6.time_support(sample_dicts[jmax], delta=t_delta)
-        if verbose:
-            print(f"  [2-stage] t_c window: [{t_window[0]*1e3:+.1f}, "
-                  f"{t_window[1]*1e3:+.1f}] ms "
-                  f"(full prior [{sp_like_v6.t_lo*1e3:+.0f}, "
-                  f"{sp_like_v6.t_hi*1e3:+.0f}] ms)")
-
-    # ── Stage 2: v5 HM numerator / v5 (2,2) denominator ────────────────
-    sk = dict(sp_kwargs or {})
-    sk.update(n_basis=sk.get("n_basis", 5),
-              positive_harmonics=sk.get("positive_harmonics", True),
-              n_phi=sk.get("n_phi", 64), n_psi=sk.get("n_psi", 32),
-              refine_fac=sk.get("refine_fac", 8),
-              dt_res=sk.get("dt_res", 2.5e-5))
-    sk.pop("phase_basis", None)
-
-    common = dict(marg_phase=flags["phase"], marg_psi=flags["psi"],
-                  marg_time=flags["geocent_time"],
-                  marg_dist=flags["luminosity_distance"],
-                  tc0=float(tc_gps), window_fn=window_fn, t_window=t_window)
-
-    v5_hm = V5(ifos, wfg, priors, **common, **sk)
-    v5_22 = V5(ifos, make_22_generator(wfg), priors, **common, **sk)
-
+    # ── Stage 2: v5 HM numerator + v5 (2,2)-collapse denominator ──
+    v5_hm = _build_v5(ifos, wfg, priors, flags, tc_gps, sp_kwargs,
+                      window_fn, t_window=None)
     if verbose:
-        print(f"  [2-stage] stage 2: {idx1.size} unique survivors, "
-              f"2x{sk['n_basis']}-call FFT basis (HM + 22, one pool)")
+        print(f"  [2-stage] stage 2: {idx1.size} unique survivors, ...")
 
     t0 = time.perf_counter()
-    log_l_hm, log_l_22_v5 = _pool_eval_pairs(v5_hm, v5_22, sample_dicts,
-                                              idx1, npool)
+    log_l_hm, log_l_22_v5 = _pool_eval_pairs(v5_hm, sample_dicts, idx1, npool)
     t_stage2 = time.perf_counter() - t0
 
     log_w2 = log_l_hm - log_l_22_v5
 
-    # ── Outlier clipping: prevent single extreme value from dominating ──
-    fin = np.isfinite(log_w2)
-    if fin.sum() > 10:
-        med = np.median(log_w2[fin])
-        mad = np.median(np.abs(log_w2[fin] - med)) + 1e-12
-        bad = fin & (np.abs(log_w2 - med) > 10.0 * mad)
-        if bad.any() and verbose:
-            print(f"  [2-stage] ** {bad.sum()} outlier log_w2 "
-                  f"(|dlogL - med| > 10 MAD, max={np.abs(log_w2[bad]-med).max():.1f}); "
-                  f"clipping for rejection max")
-            log_w2 = np.where(bad, med + 10.0 * mad * np.sign(log_w2 - med),
-                              log_w2)
+    # ── direct v5 HM weight with Horvitz-Thompson thinning correction ──
+    # log_w = logL_HM_v5 + log pi - log q - log p_thin.
+    # The v5 (2,2) terms cancel identically; the v6 (2,2) enters only through
+    # the thinning probabilities, so the v6-v5 residual never touches the
+    # weight. For above-threshold samples this IS the single-stage weight.
+    log_w_comb = (log_l_hm + np.asarray(log_prior)[idx1]
+                  - np.asarray(log_draw_prob)[idx1] - log_p1)
 
-    # ── Rejection sample ────────────────────────────────────────────────
-    log_w2_raw = log_w2[inv1]
-    idx2_raw = rejection_sample(log_w2_raw, rng)
-    idx_final = idx1_raw[idx2_raw]
-    n_uniq_final = int(np.unique(idx_final).size)
+    log_w_final, khat2 = _psis_smooth(log_w_comb, "2-stage", verbose)
+    acc = rejection_sample(log_w_final, rng)
+    idx_final = idx1[acc]
 
-    result.update(
-        idx_final=idx_final, log_w2=log_w2,
-        log_l_hm=log_l_hm, log_l_22_v5=log_l_22_v5,
-        kish2=kish_eff(log_w2_raw),
-        n_unique_final=n_uniq_final,
-        eff2=100.0 * idx2_raw.size / max(n_target, 1),
-        eff_total=100.0 * idx_final.size / N,
-        t_stage2=t_stage2, t_window=t_window)
+    kish2 = kish_eff(log_w_comb)
+    out.update(idx_final=idx_final, log_w2=log_w2,
+               log_w_comb=log_w_comb, log_w_final=log_w_final,
+               log_l_hm=log_l_hm, log_l_22_v5=log_l_22_v5,
+               khat2=khat2, kish2=kish2, n_unique_final=idx_final.size,
+               eff2=100.0 * idx_final.size / max(idx1.size, 1),
+               eff_total=100.0 * idx_final.size / N,
+               t_stage2=t_stage2, t_window=None)
 
     if verbose:
         d = log_w2[np.isfinite(log_w2)]
-        msg = (f"  [2-stage] stage 2: {idx2_raw.size}/{n_target} accepted "
-               f"({result['eff2']:.1f}%; Kish {result['kish2']:.1f}%) "
-               f"in {t_stage2:.1f}s")
+        msg = (f"  [2-stage] stage 2: {idx_final.size}/{idx1.size} accepted "
+               f"({out['eff2']:.1f}%; Kish {kish2:.1f}%) in {t_stage2:.1f}s")
         if d.size:
             msg += (f" | dlogL mean={d.mean():+.3f} "
                     f"max|.|={np.abs(d - d.mean()).max():.3f}")
         print(msg)
-        print(f"  [2-stage] final: {idx_final.size}/{N} equal-weight HM "
-              f"samples ({result['eff_total']:.2f}%)")
-        print(f"  [2-stage] mean multiplicity {counts1.mean():.1f} "
-              f"({n_target} draws -> {idx1.size} unique); "
-              f"final {idx_final.size} draws, {n_uniq_final} distinct theta")
+        print(f"  [2-stage] final: {idx_final.size}/{N} equal-weight HM samples "
+              f"({out['eff_total']:.2f}%), all distinct")
+    return out
 
-    return result
