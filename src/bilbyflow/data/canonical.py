@@ -309,3 +309,35 @@ def real_strain_to_x_production_order(*args, **kwargs):
     (x_strain, total_fd_by_det, var_q)."""
     x, _wfd, tfd, vq = real_strain_to_x(*args, **kwargs, order="production")
     return x, tfd, vq
+
+
+
+# made explicitly to make the embedding more customizable. 
+    # Should work as a centralised way to take in the input data and feed
+    # into custom embeddings through the StrainEmbedding class
+def x_layout(cfg, psd_conditioning=True, amp_dim=0):
+    """Block offsets in the packed x vector — the inverse of build_x_full.
+    THE layout definition; anything slicing x should read it from here."""
+
+    g = canonical_grid(cfg)
+
+    nm, ntd = g["n_masked"], g["n_td"]
+
+    per_det = 2 * nm + ntd
+
+    out, o = {}, 0
+    for det in ("H1", "L1"):
+        out[f"re_{det}"] = (o, o + nm); o += nm
+        out[f"im_{det}"] = (o, o + nm); o += nm
+        out[f"td_{det}"] = (o, o + ntd); o += ntd
+    out["strain"] = (0, o)
+
+    if psd_conditioning:
+        for det in ("H1", "L1"):
+            out[f"psd_{det}"] = (o, o + nm); o += nm
+    
+    if amp_dim:
+        out["amp"] = (o, o + amp_dim); o += amp_dim
+    out["_total"] = o
+
+    return out
