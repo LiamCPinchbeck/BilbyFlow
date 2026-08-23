@@ -140,12 +140,13 @@ class OnTheFlyGWDataset(CleanCacheMixin, ConsStackMixin,
         self.noise_eras = None
         self._noise_idx = None
 
-        if self.noise_source == "real" or self.embed_consistency:
+        # read from cfg, not self: _init_cache_and_cons (which sets
+        # self.cons_real) runs after this method
+        cons_real = bool(cfg.get("consistency_real_rows", False))
+        if self.noise_source == "real" or (self.embed_consistency
+                                           and cons_real):
             if noise_bank is None:
-                raise ValueError("noise_source: real / embed_consistency "
-                                 "requires the noise segment bank")
-            if int(noise_bank["n_td"]) != self.n_td:
-                raise ValueError(f"noise bank segment length "
+                raise ValueError("noise_source: real / consistency_real_rows "
                                  f"{noise_bank['n_td']} != analysis n_td "
                                  f"{self.n_td}")
             eH = np.asarray(noise_bank["era_H1"])
@@ -221,9 +222,24 @@ class OnTheFlyGWDataset(CleanCacheMixin, ConsStackMixin,
 
     def _init_cache_and_cons(self, cfg, noise_bank):
         # v4.3: JEPA embedding consistency (real->synthetic anchor)
-        self.k_synth = int(cfg.get("consistency_k_synth", 1))  # 0 = anchor
-        self.k_real = int(cfg.get("consistency_k_real", 1))
-        self.cons_frac = float(cfg.get("consistency_frac", 1.0))
+        self.k_synth = int(cfg.get("consistency_k_synth", 1))   # no_grad anchors
+        # grad-bearing rows; consistency_k_real is the old name for the count
+        self.k_grad = int(cfg.get("consistency_k_grad",
+                                  cfg.get("consistency_k_real", 1)))
+        # real segments as the far end of the comparison. Default OFF: real
+        # data is whitened with a FLOORED PSD estimate, so a real-vs-synthetic
+        # loss also asks the embedding to absorb that whitening mismatch,
+        # which is an artifact of the estimator rather than a property we want.
+        self.cons_real = bool(cfg.get("consistency_real_rows", False))
+        self.k_real = self.k_grad if self.cons_real else 0   # back-compat attr
+        if self.k_grad < 1 and self.embed_consistency:
+            raise ValueError(
+                "consistency_k_grad must be >= 1 (the k_synth rows are "
+                "no_grad anchors, so with 0 grad rows the term contributes "
+                "no gradient). Use embed_consistency: false to turn it off.")
+        self.k_synth        = int(cfg.get("consistency_k_synth", 1))  # 0 = anchor
+        self.k_real         = int(cfg.get("consistency_k_real", 1))
+        self.cons_frac      = float(cfg.get("consistency_frac", 1.0))
         if self.embed_consistency and noise_bank is None:
             raise ValueError("embed_consistency=True requires the noise "
                              "segment bank (load-only, noise_source can stay "

@@ -1,13 +1,21 @@
 """
 bilbyflow.data.dataset_cons — VICReg embedding-consistency stack (mixin).
 
-Builds a matched-PSD stack of the SAME signal under different synthetic/real
-noise realisations; the embedding is trained to map them to one point
-(real -> synthetic anchor). 
+Builds a matched-PSD stack of the SAME signal under different noise
+realisations; the embedding is trained to map them all to one point. Every
+row shares one correctly-matched PSD drawn per stack, so within a stack the
+signal and the PSD are fixed and ONLY the noise realisation differs — the
+objective is noise marginalisation, E_noise[f(s+n)] ~ f(s+n').
 
-Every row of a stack (synthetic AND real)
-shares one correctly-matched PSD drawn per stack — same signal + same PSD,
-only the noise realisation differs.
+Two modes (consistency_real_rows):
+  false (default) — every row is a fresh gaussian_physical draw. Needs no
+      noise-segment bank. Preferred because real segments are whitened with
+      a FLOORED PSD estimate, so a real-vs-synthetic loss also asks the
+      embedding to absorb that whitening mismatch, which is an artifact of
+      the estimator and not a property worth training for.
+  true — the grad-bearing rows use real segments (the original JEPA
+      objective: real -> synthetic anchor). Keeps the evidence that the
+      embedding behaves on non-Gaussian noise, at the cost above.
 
 Requires the host class to provide (all defined on OnTheFlyGWDataset):
   _pack, _bn, _psd_ctx, plus the attributes embed_consistency, cons_frac,
@@ -37,9 +45,18 @@ class ConsStackMixin:
         return self._build_cons_stack(sig_m, bn_m, ctx_m, pools)
 
     def _matched_cons_draw(self):
-        """One PSD-consistent cons stack context. Draw an era and one
-        (H1, L1) file pair, return that pair's matched bn / psd_ctx plus the
-        per-file segment index pools."""
+        """One PSD-consistent cons stack context: the matched bn / psd_ctx,
+        plus per-file segment pools when real rows are in use.
+
+        Synthetic-only mode draws the PSD from the ordinary PSD bank, so no
+        noise-segment bank is needed at all."""
+        if not self.cons_real:
+            pidx = np.random.randint(self.n_psd_bank)
+            psd_m = {"H1": self.psd_bank_H1[pidx],
+                     "L1": self.psd_bank_L1[pidx]}
+            bn_m = {d: self._bn(psd_m[d]) for d in ("H1", "L1")}
+            return bn_m, self._psd_ctx(psd_m), None
+
         era = self.noise_eras[np.random.randint(len(self.noise_eras))]
         idxH, idxL = self._noise_idx[era]
         iH = int(idxH[np.random.randint(len(idxH))])
@@ -59,7 +76,8 @@ class ConsStackMixin:
         signal, each with its own noise realisation, packed + context-tailed
         into one (K, D) float32 tensor for the JEPA loss."""
         kinds = (["gaussian_physical"] * self.k_synth
-                 + ["real"] * self.k_real)
+                 + [("real" if self.cons_real else "gaussian_physical")]
+                 * self.k_grad)
         stack = []
         for kind in kinds:
             sg = None

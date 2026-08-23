@@ -8,8 +8,9 @@ Purpose:
 shape the embedding early in training, when the NLL gradient is weak, 
 so it does not collapse onto a low-rank subspace. 
 
-The loss is annealed to zero within each curriculum stage and the 
-head is NEVER used at inference — best_state is flow-only, so the 
+The loss is annealed to zero within each curriculum stage and the
+head is NEVER used at inference — best_state holds the embedding and flow
+only (the head is stored under a separate checkpoint key), so the
 reweighting path never imports this module.
 
 Per detector I in {H1, L1}, from the noiseless whitened signal h_w:
@@ -67,10 +68,14 @@ class AuxHead(nn.Module):
     shared embedding features (first ``in_dim`` dims). LayerNorm keeps it
     batch-size agnostic. Training-only scaffold.
 
-    in_dim is aux_k = min(cfg["aux_n_channels"], feat_dim); restricting to
-    the first aux_k context dims confines aux gradient (at the final-feature
-    level) to a slice inside the strain embedding, leaving the rest of the
-    context and the PSD-encoder block shaped by the flow loss alone.
+        in_dim is aux_k = min(cfg["aux_n_channels"], feat_dim).
+
+    NOTE (22/08/2026): the embeddings now fuse the PSD encoding BEFORE their
+    head, so every context dim mixes strain and PSD information — slicing
+    [0:aux_k] no longer isolates strain features, and aux gradients reach the
+    PSD encoder. Previously the context was [strain(512) || psd_enc(64)] and
+    the slice was strain-only. If the old confinement is wanted back, expose
+    the pre-fusion strain features from the embedding and tap those instead.
     """
     def __init__(self, in_dim, n_aux=N_AUX, hidden=128):
         super().__init__()

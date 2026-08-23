@@ -4,7 +4,7 @@ bilbyflow.diagnostics.psis — Pareto-smoothed IS tail diagnostic.
 Essentially, if the efficiency is low it doesn't necessarily mean that the
 reweighting is unreliable. If the khat is high it implies that the variance
 in the weights is so large that you can't draw good samples. Generally only
-been a thing in low samples when it's unreliable in the first place \(^u^)/. 
+been a thing in low samples when it's unreliable in the first place (^u^). 
 (more on that below)
 
 psis_khat is the single k-hat estimator imported by both the reweighting

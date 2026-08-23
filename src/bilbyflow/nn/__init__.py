@@ -9,13 +9,11 @@ flow.py (build_density_estimator, FeatureCache, PSDConditionedEmbedding,
 reconstruct_from_checkpoint) is intended to live alongside these but is not
 part of this split.
 """
+from .embedding import (StrainEmbedding, psd_mlp,
+                        Conv1dEmbedding, Conv1dResNetEmbedding,
+                        ResNetEmbedding)
+from .flow import ConditionalFlow, NSF
 
-from .embedding import (
-    build_resnet_embedding,
-    Conv1dEmbedding,
-    Conv1dResNetEmbedding,
-    ResNetEmbedding,
-)
 from .aux_head import (
     AuxHead,
     AUX_NAMES,
@@ -26,9 +24,12 @@ from .aux_head import (
 
 __all__ = [
     "build_resnet_embedding",
+    "StrainEmbedding",
     "Conv1dEmbedding",
     "Conv1dResNetEmbedding",
     "ResNetEmbedding",
+    "ConditionalFlow", 
+    "NSF"
     "AuxHead",
     "AUX_NAMES",
     "N_AUX",

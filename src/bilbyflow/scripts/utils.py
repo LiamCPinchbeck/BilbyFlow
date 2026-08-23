@@ -24,28 +24,33 @@ matplotlib.rcParams["text.usetex"] = False
 import matplotlib.pyplot as plt
 from corner import corner
 
+import time
+import pickle
+
 from ..coordinates.sky import samples_detector_to_radec
 from ..coordinates.params import dL_to_physical
 from ..data.dataset import generate_fixed_dataset
 from ..nn.aux_head import AUX_NAMES, N_AUX
+from ..nn.embedding import Conv1dEmbedding, Conv1dResNetEmbedding, ResNetEmbedding
 
 __all__ = ["run_inference", "plot_corner_fig", "pp_test",
-           "plot_aux_diagnostics", "run_diagnostics"]
+           "plot_aux_diagnostics", "run_diagnostics",
+           "DATA_FILES", "print_run_banner", "make_out_dir",
+           "build_val_waveforms", "build_psd_bank", "build_noise_bank",
+           "fit_standardiser"]
 
 
+def run_inference(npe, x_obs, cfg, param_names, n_samples=10_000, tc=None):
+    """Sample the flow at one RAW x and return PHYSICAL parameters (ra/dec
+    restored, dL/Mc un-logged). The embedding standardises x itself."""
+    DEVICE = next(npe.parameters()).device
+    std = npe.embedding.std
 
+    x_n = x_obs.unsqueeze(0).to(DEVICE)          # raw, (1, W)
 
-def run_inference(posterior, x_obs, std, cfg, param_names, n_samples=10_000,
-                  tc=None):
-    """Sample the flow at one x and return PHYSICAL parameters (ra/dec
-    restored, dL/Mc un-logged)."""
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-    x_n = std.normalise_x(x_obs).to(DEVICE)
-
-    s = posterior.sample((n_samples,), x=x_n).cpu().numpy()
+    with torch.no_grad():
+        s = npe.sample(n_samples, x_n).cpu().numpy()
     s = s * std.theta_std.numpy() + std.theta_mean.numpy()
-    s = dL_to_physical(s, param_names, cfg)
 
     event_tc = tc if tc is not None else float(cfg["ref_geocent_time"])
 
@@ -81,16 +86,15 @@ def pp_test(posterior, x_test, theta_test, std, names, filename,
 
     nt, np_ = x_test.shape[0], theta_test.shape[1]
 
-    xn = std.normalise_x(x_test)
     tn = std.normalise_theta(theta_test)
-
     pct = np.zeros((nt, np_))
     for i in tqdm(range(nt), desc="PP test"):
-        s = posterior.sample((n_posterior,), x=xn[i].to(DEVICE)).cpu().numpy()
+        with torch.no_grad():
+            s = posterior.sample(
+                n_posterior, x_test[i].unsqueeze(0).to(DEVICE)).cpu().numpy()
         for j in range(np_):
             pct[i, j] = np.mean(s[:, j] < tn[i, j].item())
 
-    
     fig, ax = plt.subplots(figsize=(6, 6))
 
     cr = np.linspace(0, 1, 200)
@@ -294,3 +298,182 @@ def run_diagnostics(x_val, theta_val, std, cfg, diag_dir, dataset=None):
     fig.savefig(f"{diag_dir}/data_stats.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved to {diag_dir}/")
+
+########################################################################
+# ----------           train-script setup helpers        ---------------
+########################################################################
+# originally in train.py, but offloaded here to simplify the main
+# script
+
+
+DATA_FILES = ["waveforms.pkl", "sky_bank.pkl", "psd_bank.pkl",
+              "noise_bank.pkl", "standardiser.pkl",
+              "val_waveforms.pkl", "val_data.pkl", "test_data.pkl"]
+
+
+def print_run_banner(cfg):
+    from ..inference.priors import make_prior_dict
+    try:
+        pr = make_prior_dict(cfg)
+        print("[priors] actual families: "
+              + ", ".join(f"{k}:{type(pr[k]).__name__}" for k in pr))
+        if str(cfg.get("dL_param", "linear")).lower() == "log":
+            print("[priors] dL coordinate: ln(dL)")
+    except Exception as e:
+        print(f"[priors] could not summarise prior families: {e}")
+    if cfg.get("curriculum_stages"):
+        caps = [s.get("dL_max") for s in cfg["curriculum_stages"]]
+        print(f"[curriculum] {len(caps)} stages, dL caps {caps} Mpc")
+    if cfg.get("aux_supervision", False):
+        print(f"[aux] supervision ON: lambda={cfg.get('aux_lambda', 0.5)}, "
+              f"anneal_frac={cfg.get('aux_anneal_frac', 0.7)}, "
+              f"slice={cfg.get('aux_n_channels', 128)} ctx dims, "
+              f"{N_AUX} targets")
+
+
+def make_out_dir(cfg, args):
+    """Create the run directory; on resume, symlink the reused data files."""
+    uid = cfg.get("unique_analysis_identifier", None)
+    uid = (uid + "_") if uid is not None else ""
+    tag = "resume_" if args.resume else ""
+    OUT = time.strftime(
+        f"{cfg['output_prefix']}_{uid}{tag}%m%d_%H%M%S_{int(time.time()*1000)}")
+    if os.path.isdir(OUT):
+        OUT = OUT + ("_alpha" if not os.path.isdir(OUT + "_alpha") else "_beta")
+    os.makedirs(OUT, exist_ok=False)
+    if not args.resume:
+        return OUT
+
+    reuse = (set(DATA_FILES) if args.no_fresh_data
+             else set(cfg.get("reuse_files", []) or []))
+    unknown = reuse - set(DATA_FILES)
+    if unknown:
+        raise ValueError(f"reuse_files has unrecognised entries "
+                         f"{sorted(unknown)}, valid options: {DATA_FILES}")
+    if "standardiser.pkl" in reuse and cfg.get("aux_supervision", False):
+        print("  NOTE: reusing standardiser.pkl with aux_supervision ON "
+              "requires matching aux stats (v4.2: 10 targets) -- an old "
+              "pickle will fail fast at training start.")
+    for fname in DATA_FILES:
+        src = os.path.join(args.resume, fname)
+        if fname not in reuse:
+            print(f"Skipping symlink for {fname} (will regenerate)")
+        elif os.path.exists(src):
+            print(f"Linking {fname} from {args.resume} (reuse)")
+            os.symlink(os.path.abspath(src), os.path.join(OUT, fname))
+        else:
+            print(f"  WARNING: reuse requested for {fname} but {src} missing")
+    return OUT
+
+
+def build_val_waveforms(cfg):
+    """Disjoint-intrinsics val/test waveform bank (seed 4242)."""
+    from ..data.banks import precompute_waveforms
+    cfg_val = dict(cfg)
+    cfg_val["n_waveforms"] = int(cfg.get("n_val_waveforms", 5000))
+    return precompute_waveforms(cfg_val, seed_val=4242)
+
+
+def build_psd_bank(cfg, OUT, noise_data_dir):
+    """PSD bank from real segments (cached), or None for the fixed bilby PSD.
+    GP sampling (psd_gp_dir) is retired -- fail loudly up front."""
+    from ..data.banks import load_or_compute
+    from ..data.psd import precompute_psd_bank_from_segments
+    if cfg.get("psd_gp_dir"):
+        raise SystemExit("psd_gp_dir (GP-sampled PSD bank) is retired; use "
+                         "noise_data_dir with real segments instead.")
+    if noise_data_dir is None:
+        print("No noise_data_dir in config -- using fixed bilby default PSD")
+        return None
+    psd_bank = load_or_compute(f"{OUT}/psd_bank.pkl",
+                               precompute_psd_bank_from_segments,
+                               cfg, noise_data_dir)
+    print(f"  PSD bank: {psd_bank['psd_H1'].shape[0]} PSDs, "
+          f"eras={np.unique(psd_bank['era'])}")
+    return psd_bank
+
+
+def build_noise_bank(cfg, OUT, noise_data_dir):
+    """Real-noise segment bank when noise_source=real or embed_consistency."""
+    from ..data.banks import precompute_noise_segment_bank, load_or_compute
+    need = (str(cfg.get("noise_source", "gaussian_whitened")).lower() == "real"
+            or bool(cfg.get("embed_consistency", False)))
+    if not need:
+        return None
+    if noise_data_dir is None:
+        raise ValueError("noise_source: real / embed_consistency requires "
+                         "noise_data_dir")
+    noise_bank = load_or_compute(f"{OUT}/noise_bank.pkl",
+                                 precompute_noise_segment_bank,
+                                 cfg, noise_data_dir)
+    print(f"  noise bank: {len(noise_bank['era_H1'])} H1 + "
+          f"{len(noise_bank['era_L1'])} L1 segments")
+    return noise_bank
+
+
+def fit_standardiser(dataset, cfg, param_names):
+    """Fit the Standardiser on a fresh full-range draw (+ aux stats)."""
+    from ..data.standardiser import Standardiser
+    print("Computing standardisation (theta full range, + aux stats)...")
+    dataset.set_dL_cap(None)
+    xs, ts, _sids, auxs = generate_fixed_dataset(
+        dataset, int(cfg["n_standardisation"]), return_aux=True)
+    return Standardiser(
+        xs, ts, strain_dim=dataset.strain_dim,
+        psd_log_mean=dataset.psd_log_mean, psd_log_std=dataset.psd_log_std,
+        psd_conditioning=dataset.psd_conditioning,
+        dL_log=dataset.dL_log,
+        dL_index=(param_names.index("luminosity_distance")
+                  if "luminosity_distance" in param_names else None),
+        Mc_log=dataset.Mc_log,
+        Mc_index=(param_names.index("chirp_mass")
+                  if "chirp_mass" in param_names else None),
+        amp_dim=dataset.amp_dim,
+        aux_sample=(auxs if cfg.get("aux_supervision", False) else None))
+
+
+_EMBEDDINGS = {"conv1d": Conv1dEmbedding,
+               "conv1d_resnet": Conv1dResNetEmbedding,
+               "resnet18": ResNetEmbedding,
+               "resnet34": ResNetEmbedding,
+               "resnet50": ResNetEmbedding}
+
+
+def build_npe(cfg, std=None, embedding_cls=None, flow_cls=None):
+    """THE model factory: training and reweighting both call this, so the
+    architecture has one definition and a checkpoint always matches.
+
+    embedding_cls / flow_cls override the config for custom architectures —
+    pass the SAME ones at reweighting time that you trained with."""
+    from ..nn.embedding import (Conv1dEmbedding, Conv1dResNetEmbedding,
+                                ResNetEmbedding)
+    from ..nn.flow import NSF
+    from ..npe import NPE
+    from ..io.config import get_prior_bounds
+    from ..coordinates.sky import MAX_DT_HL
+    import numpy as np
+
+    etype = cfg.get("embedding_type", "conv1d_resnet")
+    cls = embedding_cls or _EMBEDDINGS.get(etype)
+    if cls is None:
+        raise ValueError(f"unknown embedding_type {etype!r}; pass "
+                         f"embedding_cls=<your class> instead")
+    embedding = cls(cfg, std)
+
+    lo, hi = get_prior_bounds(cfg)
+    names = cfg["inferred_parameters"]
+    if "ra" in names and "dec" in names:            # sky reparam box
+        ri, di = names.index("ra"), names.index("dec")
+        lo[ri], hi[ri] = -MAX_DT_HL, MAX_DT_HL
+        lo[di], hi[di] = 0.0, 2 * np.pi
+
+    fcls = flow_cls or NSF
+    flow = fcls(theta_dim=len(names),
+                context_dim=embedding.context_dim,
+                num_transforms=int(cfg["num_transforms"]),
+                hidden_features=int(cfg["hidden_features"]),
+                num_bins=int(cfg.get("num_bins", 24)),
+                dropout=float(cfg.get("flow_dropout", 0.0)),
+                bounds=(std.get_normalised_prior_bounds(lo, hi)
+                        if std is not None else None))
+    return NPE(embedding, flow), (lo, hi)

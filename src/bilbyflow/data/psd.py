@@ -17,6 +17,8 @@ import glob
 import numpy as np
 
 from .canonical import welch_psd
+from ..io.config import grid_quantities
+
 
 __all__ = ["precompute_psd_bank", "precompute_psd_bank_from_segments"]
 
@@ -27,14 +29,11 @@ _BANK_SEED = 42
 
 
 def _freq_grid(cfg):
-    """Grid dict (welch_psd-compatible) from the config."""
-    duration = float(cfg["duration"])
-    sr = int(cfg["sampling_frequency"])
-    n_fd = int(duration * sr / 2) + 1
-    freq_array = np.arange(n_fd) / duration
-    return dict(duration=duration, sr=sr, f_min=float(cfg["f_min"]),
-                n_fd=n_fd, freq_array=freq_array, df=1.0 / duration)
-
+    """THE analysis grid (io.config.grid_quantities), plus the legacy `n_fd`
+    alias this module's callers use."""
+    g = dict(grid_quantities(cfg))
+    g["n_fd"] = g["n_fd_full"]
+    return g
 
 def _segment_psds(fp, cfg, g):
     """All Welch PSD estimates from one noise file, on the analysis grid.
@@ -61,7 +60,8 @@ def _segment_psds(fp, cfg, g):
             if len(sub) < nperseg:
                 continue
             psd = welch_psd(sub, cfg, g)
-            if np.isfinite(psd[g["freq_array"] >= g["f_min"]]).any():
+            in_band = psd[g["freq_array"] >= g["f_min"]]
+            if np.isfinite(in_band).mean() > 0.99:
                 out.append(psd)
     return out
 

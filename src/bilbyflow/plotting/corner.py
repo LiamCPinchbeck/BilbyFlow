@@ -130,8 +130,8 @@ def plot_reweighted_vs_published(npe_samples, result, published_array, truths,
     ], loc="upper right", fontsize=11)
 
 
-    fig.suptitle(f"{event_name} (real data): NPE vs Reweighted vs Published | "
-                 f"\hat k={result['khat']:.2f}", fontsize=13, y=1.02)
+    fig.suptitle(rf"{event_name} (real data): NPE vs Reweighted vs Published "
+                rf"| $\hat{{k}}$={result['khat']:.2f}", fontsize=13, y=1.02)
     fig.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -177,8 +177,8 @@ def plot_reweighted_npe_only(npe_samples, result, param_names, event_name, filen
     ], loc="upper right", fontsize=11)
 
 
-    fig.suptitle(f"{event_name} (real data): NPE vs Reweighted | "
-                 f"\hat k={result['khat']:.2f}", fontsize=13, y=1.02)
+    fig.suptitle(rf"{event_name} (real data): NPE vs Reweighted | "
+                 rf"$\hat{{k}}$={result['khat']:.2f}", fontsize=13, y=1.02)
     fig.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

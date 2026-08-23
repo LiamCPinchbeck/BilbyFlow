@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bilbyflow"
-version = "1.0.1"
+version = "1.1.0"
 authors = [
   { name = "Liam Pinchbeck", email = "lcpinchbeck@gmail.com" },
 ]
@@ -16,7 +16,9 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "torch>=2.0",
+    "torchvision>=0.15",
     "sbi>=0.22",
+    "zuko>=1.0",
     "bilby>=2.1",
     "matplotlib>=3.7",
     "corner>=2.2",
@@ -28,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 pesummary = ["pesummary>=0.13"]
 dev = ["pytest", "ruff"]
+test = ["pytest>=7", "zuko>=1.0"]
 
 [project.scripts]
 bilbyflow-train = "bilbyflow.scripts.train:main"

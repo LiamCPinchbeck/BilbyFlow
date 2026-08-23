@@ -1,310 +1,245 @@
 """
-bilbyflow.nn.flow — the conditional flow: context assembly, the shared-feature
-tap, and (re)construction of the density estimator.
+bilbyflow.nn.flow — the flow: context in, density out.
 
-This module consolidates code that was previously duplicated across the
-training script and the reweighting script:
+A flow never sees the raw data. It sees the embedding's output vector and
+models p(theta | context). The built-ins are thin wrappers around zuko, which
+supplies the architectures; the interface is unchanged from the nflows
+version, so nothing else in the package needs editing.
 
-  * FeatureCache        — training had it; reweighting had a cut-down _FeatureCache.
-  * PSDConditionedEmbedding — identical two-branch context embedding.
-  * build_density_estimator     — training-time build (from a live dataset).
-  * reconstruct_from_checkpoint — inference-time build (from cfg + standardiser,
-                                  loading best_state with the fd_branch<->fd_stem
-                                  key remap for older checkpoints).
+    flow = NSF(theta_dim=12, context_dim=576, num_transforms=64,
+               hidden_features=512, num_bins=24)
+    flow = MAF(theta_dim=12, context_dim=576)
 
-Both build paths now share ONE FeatureCache and ONE PSDConditionedEmbedding,
-so the aux head, the JEPA slice, and the reweighter all see the same context
-layout: [strain_emb (embedding_output_dim) || psd_enc || amp].
+    flow.log_prob(theta, context)   # (B, T), (B, D) -> (B,)
+    flow.sample(n, context)         # (1, D) -> (n, T)
+
+Extra keywords go straight to zuko, so anything it supports is reachable
+without touching this file:  NSF(..., residual=True), SOSPF(..., degree=4).
+Head over to the Zuko documentation on the implementations 
+https://zuko.readthedocs.io/stable/api/zuko.flows.html
+
+For a custom architecture, subclass ConditionalFlow and implement log_prob
+and _draw; sample() wraps _draw with the prior-box rejection, so do not
+override it.
+
+    class MyFlow(ConditionalFlow):
+        def __init__(self, theta_dim, context_dim, **kw):
+            super().__init__(theta_dim, context_dim)
+        def log_prob(self, theta, context): ...
+        def _draw(self, n, context): ...       # sample() wraps this
+
+`bounds` (low, high) in the flow's own coordinates makes sample() reject
+draws outside the box — what DirectPosterior(reject_outside_prior=True) used
+to do. Pass it to the constructor, or call set_bounds() later once the
+standardiser exists.
+
+SAMPLING SPEED. zuko's flows are fully autoregressive by default: the inverse
+(sampling) costs one network pass per parameter. The built-ins therefore
+default to passes=2, i.e. coupling transforms, which invert in a single pass —
+the structure the sbi/nflows model used. passes=None restores full
+autoregression: better density estimation per transform, ~theta_dim times
+slower to sample.
+
+zuko's spline transforms are defined on [-5, 5] and features outside that box
+pass through untransformed (there is no tail_bound knob; the argument is
+accepted and ignored for signature compatibility). theta is standardised, so
+this is fine — do not feed raw physical parameters to a spline flow.
 """
 
-import numpy as np
 import torch
 import torch.nn as nn
 
-from sbi.utils import BoxUniform
-from sbi.neural_nets import posterior_nn
-from sbi.inference.posteriors import DirectPosterior
-
-from .embedding import build_resnet_embedding
-from ..io.config import grid_quantities
-
-__all__ = [
-    "FeatureCache", "PSDConditionedEmbedding", "build_embedding_net",
-    "build_density_estimator", "reconstruct_from_checkpoint",
-]
+__all__ = ["ConditionalFlow", "NSF", "NCSF", "MAF", "NICE",
+           "SOSPF", "GF"]
 
 
-# ── MLP fallback embedding (embedding_type == "mlp") ─────────────────────────
-
-def build_embedding_net(input_dim, layer_widths):
-    layers, dims = [], [input_dim] + list(layer_widths)
-    for i in range(len(dims) - 1):
-        layers.append(nn.Linear(dims[i], dims[i + 1]))
-        layers.append(nn.ELU())
-    return nn.Sequential(*layers)
-
-
-# ── shared-feature tap ───────────────────────────────────────────────────────
-
-class FeatureCache(nn.Module):
-    """Wrapper caching the embedding's last output so the aux head
-    (and JEPA consistency) can read the SHARED features computed inside
-    de.log_prob -- one embedding forward per batch, no second pass.
-
-    The reweighting path does not read .features; it only needs the wrapper so
-    the checkpoint's ".net." key prefix matches.
-    """
-    def __init__(self, net):
-        super().__init__()
-        self.net = net
-        self.features = None
-
-    def forward(self, x):
-        f = self.net(x)
-        self.features = f
-        return f
-
-
-# ── PSD-conditioned two-branch context ───────────────────────────────────────
-
-class PSDConditionedEmbedding(nn.Module):
-    """Context layout: [strain_embedding || psd_encoder || amp]. The aux slice
-    (first aux_n_channels dims) and the JEPA strain slice are both inside the
-    strain embedding; the amp block sits at the END (raw pass-through, already
-    z-scored)."""
-    def __init__(self, strain_embedding, strain_dim, psd_dim, cfg, amp_dim=0):
-        super().__init__()
-
-        self.strain_embedding = strain_embedding
-        self.strain_dim = int(strain_dim)
-        self.psd_dim = int(psd_dim)
-        self.amp_dim = int(amp_dim)
-
-        hidden = list(cfg.get("psd_encoder_hidden", [512, 256, 128]))
-
-        out = int(cfg.get("psd_encoder_out", 64))
-
-        dims = [self.psd_dim] + hidden + [out]
-
-        layers = []
-        for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1]))
-            if i < len(dims) - 2:
-                layers.append(nn.LayerNorm(dims[i + 1]))
-                layers.append(nn.ELU())
+class ConditionalFlow(nn.Module):
+    """THE flow interface. 
+    - theta_dim = number of inferred parameters,
+    - context_dim = width of the embedding's output. 
     
-        self.psd_encoder = nn.Sequential(*layers)
+    Subclasses implement log_prob(theta, context) and _draw(n, context); 
+    sample(), bounds handling and prior-box rejection are inherited."""
 
+    def __init__(self, theta_dim, context_dim, bounds=None):
+        super().__init__()
+        self.theta_dim = int(theta_dim)
+        self.context_dim = int(context_dim)
+        self.prior_low = self.prior_high = None
+        if bounds is not None:
+            self.set_bounds(*bounds)
 
-    def forward(self, x):
-        strain = x[..., :self.strain_dim]
-        ad = int(getattr(self, "amp_dim", 0) or 0)     # old pickles lack the attr
-        if ad > 0:
-            psd = x[..., self.strain_dim:-ad]
-            amp = x[..., -ad:]
-            return torch.cat([self.strain_embedding(strain),
-                              self.psd_encoder(psd), amp], dim=-1)
-        psd = x[..., self.strain_dim:]
-        return torch.cat([self.strain_embedding(strain), self.psd_encoder(psd)], dim=-1)
+    def set_bounds(self, low, high):
+        """(Re)set the prior box. Callable after construction, so a flow can
+        be built before the standardiser exists."""
+        for name, val in (("prior_low", low), ("prior_high", high)):
+            if name in self._buffers:
+                del self._buffers[name]
+            elif hasattr(self, name):
+                delattr(self, name)
+            self.register_buffer(name, torch.as_tensor(val).float())
 
+    def in_bounds(self, theta):
+        """Boolean mask of draws inside the prior box (all True if unset)."""
+        if self.prior_low is None:
+            return torch.ones(theta.shape[0], dtype=torch.bool,
+                              device=theta.device)
+        return ((theta >= self.prior_low) & (theta <= self.prior_high)).all(-1)
 
-# ── strain-embedding dispatch (shared by both build paths) ───────────────────
+    # -- the two methods a subclass provides ---------------------------------
 
-def _strain_embed(dim, cfg):
-    if cfg.get("embedding_type", "mlp") != "mlp":
-        return build_resnet_embedding(dim, cfg)
-    return build_embedding_net(dim, cfg["embedding_layers"])
+    def log_prob(self, theta, context):
+        raise NotImplementedError
 
+    def _draw(self, n, context):
+        raise NotImplementedError
 
-def _assemble_embedding(cfg, strain_dim, psd_dim, amp_dim, input_dim):
-    """Build the (possibly PSD-conditioned) embedding, wrapped in FeatureCache."""
-    if bool(cfg.get("psd_conditioning", False)):
-        strain_emb = _strain_embed(int(strain_dim), cfg)
-        emb = PSDConditionedEmbedding(strain_emb, strain_dim, psd_dim, cfg,
-                                      amp_dim=int(amp_dim))
-    else:
-        if int(amp_dim) > 0:
-            raise ValueError("amp_context requires psd_conditioning")
-        emb = _strain_embed(int(input_dim), cfg)
-    return FeatureCache(emb)
+    # -- sampling with prior-box rejection -----------------------------------
 
+    def sample(self, n, context):
+        """n draws. With `bounds` set and a single context, draws outside the
+        box are rejected and replaced (max 20 rounds)."""
+        n = int(n)
+        out = self._draw(n, context)
+        if self.prior_low is None or context.shape[0] != 1:
+            return out
 
-# ── training-time build (from a live dataset) ────────────────────────────────
+        keep = [out[self.in_bounds(out)]]
+        have, drawn = keep[0].shape[0], n
+        for _ in range(20):
+            if have >= n:
+                break
+            # size the next draw from the acceptance rate seen so far, with
+            # 2x headroom; a low rate then costs one big draw, not 20 small
+            rate = max(have / max(drawn, 1), 1e-3)
+            batch = min(int(2 * (n - have) / rate) + 64, 1_000_000)
+            extra = self._draw(batch, context)
+            drawn += batch
+            extra = extra[self.in_bounds(extra)]
+            keep.append(extra)
+            have += extra.shape[0]
 
-def build_density_estimator(dataset, std, cfg, DEVICE):
-    """Returns (density_estimator, feature_cache). The FeatureCache wraps the
-    FULL embedding so the aux head sees exactly the context the flow conditions
-    on."""
-
-    sample_x, sample_theta, _, _, _ = dataset[0]
-    input_dim = sample_x.shape[0]
-
-
-    cache = _assemble_embedding(
-        cfg, dataset.strain_dim, dataset.psd_dim,
-        int(getattr(dataset, "amp_dim", 0)), input_dim)
-
-
-
-    flow_kwargs = dict(
-        num_transforms=int(cfg["num_transforms"]),
-        hidden_features=cfg["hidden_features"],
-        num_bins=int(cfg.get("num_bins", 16)),
-        z_score_x="none", z_score_theta="none",
-    )
-
-
-    flow_dropout = float(cfg.get("flow_dropout", 0.0))
-    if flow_dropout > 0:
-        flow_kwargs["dropout_probability"] = flow_dropout
-
-
-
-    build_fn = posterior_nn("nsf", embedding_net=cache, **flow_kwargs)
-
-
-    sample_theta_norm = std.normalise_theta(sample_theta.unsqueeze(0))
-    sample_x_norm = std.normalise_x(sample_x.unsqueeze(0))
-
-
-    cache.eval()   # sbi probes with batch-1; conv BatchNorm rejects batch-1 in train mode
-    density_estimator = build_fn(sample_theta_norm, sample_x_norm)
-    cache.train()
-
-
-    return density_estimator.to(DEVICE), cache
-
-
-# ── inference-time build (from cfg + standardiser + checkpoint) ──────────────
-
-def reconstruct_from_checkpoint(ckpt_path, cfg, std):
-    """Rebuild the DirectPosterior from a training checkpoint's best_state
-    (flow-only, reweighting-compatible). Handles the fd_branch<->fd_stem key
-    remap for checkpoints saved before the attribute rename."""
-
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    if "best_state" not in ckpt:
-        raise RuntimeError(f"No best_state in {ckpt_path}. Keys: {list(ckpt.keys())}")
-
-    g = grid_quantities(cfg)
-
-    per_det = 2 * g["n_masked"] + g["n_td"]
-    strain_dim = 2 * per_det
-    n_params = len(cfg["inferred_parameters"])
-
-
-    psd_cond = (getattr(std, "psd_conditioning", False)
-                and getattr(std, "psd_log_mean", None) is not None)
-    amp_dim = int(getattr(std, "amp_dim", 0) or 0)
-
-
-    if psd_cond:
-        psd_dim = 2 * g["n_masked"]
-        input_dim = strain_dim + psd_dim + amp_dim
-    else:
-        if amp_dim > 0:
-            raise RuntimeError("standardiser has amp_dim>0 but PSD conditioning off")
-        psd_dim = 0
-        input_dim = strain_dim
-
-
-
-    embedding = _assemble_embedding(cfg, strain_dim, psd_dim, amp_dim, input_dim)
-
-
-
-    flow_kwargs = dict(
-        num_transforms=int(cfg["num_transforms"]),
-        hidden_features=cfg["hidden_features"],
-        z_score_x="none", z_score_theta="none",
-    )
-
-
-    if cfg.get("num_bins"):
-        flow_kwargs["num_bins"] = int(cfg["num_bins"])
-    build_fn = posterior_nn("nsf", embedding_net=embedding, **flow_kwargs)
-
-
-
-    dummy_x = std.normalise_x(torch.zeros(1, input_dim))
-    dummy_theta = std.normalise_theta(torch.zeros(1, n_params))
-    embedding.eval()
-    density_estimator = build_fn(dummy_theta, dummy_x)
-
-
-
-    def _load(sd):
-        miss, unexp = density_estimator.load_state_dict(sd, strict=False)
-        bad_miss = [k for k in miss if not k.endswith("num_batches_tracked")]
-        bad_unexp = [k for k in unexp if not k.endswith("num_batches_tracked")]
-        return bad_miss, bad_unexp
-
-    state = ckpt["best_state"]
-    bad_miss, bad_unexp = _load(state)
-
-
-    if bad_miss or bad_unexp:
-        remapped = {k.replace(".fd_branch.", ".fd_stem.").replace(".td_branch.", ".td_stem."): v
-                    for k, v in state.items()}
-        bad_miss, bad_unexp = _load(remapped)
-        if bad_miss or bad_unexp:
+        out = torch.cat(keep, dim=0)
+        if out.shape[0] < n:
             raise RuntimeError(
-                "Reconstructed model does not match the checkpoint.\n"
-                f"  missing: {bad_miss[:6]}{' ...' if len(bad_miss) > 6 else ''}\n"
-                f"  unexpected: {bad_unexp[:6]}{' ...' if len(bad_unexp) > 6 else ''}")
-
-        
-    density_estimator.eval()
-
-    print(f"  Loaded best_state from epoch {ckpt['epoch']} "
-          f"(best_val_loss={ckpt['best_val_loss']:.4f})")
-
-    prior = _make_normalised_prior(cfg, std)
-
-    return DirectPosterior(posterior_estimator=density_estimator, prior=prior)
-
-
-def _make_normalised_prior(cfg, std):
-    """BoxUniform over the analysis prior in normalised theta coordinates,
-    with the sky reparam (ra->dt_HL, dec->phi_det) and log-coordinate edges."""
-
-    from ..coordinates.sky import MAX_DT_HL   # provided by coordinates/sky.py (sky_coord_utils_b)
-
-
-    lows = [cfg["priors"][p]["min"] for p in cfg["inferred_parameters"]]
-    highs = [cfg["priors"][p]["max"] for p in cfg["inferred_parameters"]]
-    prior_low = torch.tensor(lows, dtype=torch.float32)
-    prior_high = torch.tensor(highs, dtype=torch.float32)
+                f"{type(self).__name__}: only {out.shape[0]}/{n} draws inside "
+                f"the prior box after 20 rounds ({out.shape[0]}/{drawn} = "
+                f"{100 * out.shape[0] / max(drawn, 1):.2g}% accepted) — the "
+                f"flow is proposing far outside the analysis prior")
+        return out[:n]
 
 
 
-    if (bool(getattr(std, "dL_log", False))
-            or str(cfg.get("dL_param", "linear")).lower() == "log") \
-            and "luminosity_distance" in cfg["inferred_parameters"]:
-        di = cfg["inferred_parameters"].index("luminosity_distance")
-        prior_low[di] = float(np.log(float(prior_low[di])))
-        prior_high[di] = float(np.log(float(prior_high[di])))
+
+# ── zuko-backed built-ins ────────────────────────────────────────────────────
+
+def _act_with_dropout(p, base=nn.ELU):
+    """Activation factory that appends Dropout(p).
+
+    zuko's conditioner MLPs take no `dropout` argument, but they do take an
+    `activation` FACTORY (called as activation()), so dropout goes in this
+    way. Real nn.Dropout modules end up in the graph, so
+    training.losses.set_dropout_p can still retune them for the final
+    curriculum stage.
+    """
+    class _ActDrop(nn.Sequential):
+        def __init__(self):
+            super().__init__(base(), nn.Dropout(p))
+    return _ActDrop
 
 
+def _zuko_net(name, theta_dim, context_dim, num_transforms, hidden_features,
+              num_blocks, passes, num_bins, kwargs, has_passes=True):
+    """Build a zuko flow, mapping our config names onto zuko's."""
+    import zuko
 
-    if (bool(getattr(std, "Mc_log", False))
-            or str(cfg.get("Mc_param", "linear")).lower() == "log") \
-            and "chirp_mass" in cfg["inferred_parameters"]:
-        mi = cfg["inferred_parameters"].index("chirp_mass")
-        prior_low[mi] = float(np.log(float(prior_low[mi])))
-        prior_high[mi] = float(np.log(float(prior_high[mi])))
+    hidden = (list(hidden_features)
+              if isinstance(hidden_features, (list, tuple))
+              else [int(hidden_features)] * int(num_blocks))
+
+    kw = dict(features=int(theta_dim), context=int(context_dim),
+              transforms=int(num_transforms), hidden_features=hidden)
+    if passes is not None and has_passes:
+        kw["passes"] = int(passes)                 # 2 = coupling, fast inverse
+    if num_bins is not None and name in ("NSF", "NCSF"):
+        kw["bins"] = int(num_bins)                 # spline flows only
+    kw.update(kwargs)                              # caller wins
+    return getattr(zuko.flows, name)(**kw)
 
 
+class _ZukoFlow(ConditionalFlow):
+    """Shared body for the built-ins. Subclasses set ZUKO."""
 
-    if "ra" in cfg["inferred_parameters"] and "dec" in cfg["inferred_parameters"]:
-        ra_idx = cfg["inferred_parameters"].index("ra")
-        dec_idx = cfg["inferred_parameters"].index("dec")
-        prior_low[ra_idx] = -MAX_DT_HL
-        prior_high[ra_idx] = MAX_DT_HL
-        prior_low[dec_idx] = 0.0
-        prior_high[dec_idx] = 2 * np.pi
+    ZUKO = None
+    HAS_PASSES = True     # False for architectures with no autoregressive
+                          # /coupling switch (NICE is always coupling; GF just doesn't  
+                          # have the idea of it) — without this zuko would forward `passes` to
+                          # the MLP builder and nn.Linear would reject it.
+
+    def __init__(self, theta_dim, context_dim, num_transforms=64,
+                 hidden_features=512, num_bins=None, dropout=None,
+                 num_blocks=2, passes=2, tail_bound=None, bounds=None,
+                 **kwargs):
+        super().__init__(theta_dim, context_dim, bounds=bounds)
+                # zuko's MaskedMLP has no `dropout` argument, so dropout is injected
+        # through the `activation` factory instead (see _act_with_dropout).
+        # Dropout is active in train mode only, so eval-time log_prob — the
+        # density the reweighter uses — stays deterministic.
+        if dropout:
+            kwargs.setdefault("activation", _act_with_dropout(float(dropout)))
+        self.net = _zuko_net(self.ZUKO, theta_dim, context_dim, num_transforms,
+                        hidden_features, num_blocks, passes, num_bins,
+                        kwargs, has_passes=self.HAS_PASSES)
 
 
+    def log_prob(self, theta, context):
+        return self.net(context).log_prob(theta)
 
-    lo, hi = std.get_normalised_prior_bounds(prior_low, prior_high)
-    return BoxUniform(low=lo, high=hi)
+    def rsample_and_log_prob(self, n, context):
+        """Reparameterised draws with their densities in one pass — the
+        primitive for IS-variance / chi^2 objectives. Returns (theta, log_q)."""
+        return self.net(context).rsample_and_log_prob((int(n),))
+
+    def _draw(self, n, context):
+        if context.shape[0] == 1:                        # one event, n draws
+            return self.net(context.squeeze(0)).sample((int(n),))
+        if int(n) == 1:                                  # a batch, one each
+            return self.net(context).sample()
+        return self.net(context).sample((int(n),))       # (n, B, theta)
+
+
+class NSF(_ZukoFlow):
+    """Neural _spline_ flow — monotonic rational-quadratic splines on [-5, 5].
+    The production architecture. num_bins maps to zuko's `bins`."""
+    ZUKO = "NSF"
+
+
+class NCSF(_ZukoFlow):
+    """Neural _circular_ spline flow, for angles on [-pi, pi). Relevant if the
+    periodic parameters are ever modelled in native coordinates."""
+    ZUKO = "NCSF"
+
+
+class MAF(_ZukoFlow):
+    """Masked autoregressive flow — affine transforms, masked-MLP conditioner.
+    Cheaper per transform than NSF; need more transforms for the same expressivity though."""
+    ZUKO = "MAF"
+
+
+class NICE(_ZukoFlow):
+    """Additive coupling flow (volume preserving). Typical baseline.
+    Always coupling, so it has no `passes` argument."""
+    ZUKO = "NICE"
+    HAS_PASSES = False
+
+
+class SOSPF(_ZukoFlow):
+    """Sum-of-squares polynomial flow. zuko kwargs: degree, polynomials."""
+    ZUKO = "SOSPF"
+
+
+class GF(_ZukoFlow):
+    """Gaussianization flow — rotations composed with monotonic maps;
+    no autoregressive/coupling switch, so no `passes` argument."""
+    ZUKO = "GF"
+    HAS_PASSES = False
