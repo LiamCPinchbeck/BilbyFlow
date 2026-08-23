@@ -65,8 +65,8 @@ jobs:
 
       - name: Console scripts resolve
         run: |
-          for c in bilbyflow-train bilbyflow-reweight-real \
-                   bilbyflow-reweight-injections bilbyflow-diagnostics; do
+          # Need to keep this list in step with [project.scripts] in pyproject.toml.
+          for c in bilbyflow-train bilbyflow-diagnostics; do
             echo "--- $c"; $c --help > /dev/null
           done
 
