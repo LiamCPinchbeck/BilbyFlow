@@ -65,10 +65,16 @@ jobs:
 
       - name: Console scripts resolve
         run: |
-          # Need to keep this list in step with [project.scripts] in pyproject.toml.
-          for c in bilbyflow-train bilbyflow-diagnostics; do
-            echo "--- $c"; $c --help > /dev/null
-          done
+          # made this get the cli scripts from the installed metadata, can't
+          # bug out from [project.scripts] as entry points are added.
+          python - <<'PY' > /tmp/scripts.txt
+          from importlib.metadata import distribution
+          for ep in distribution("bilbyflow").entry_points:
+              if ep.group == "console_scripts":
+                  print(ep.name)
+          PY
+          while read -r c; do echo "--- $c"; "$c" --help > /dev/null; done \
+              < /tmp/scripts.txt
 
       - name: pytest
         run: pytest tests -v --durations=10
