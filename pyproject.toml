@@ -34,10 +34,11 @@ test = ["pytest>=7", "zuko>=1.0"]
 
 [project.scripts]
 bilbyflow-train = "bilbyflow.scripts.train:main"
-bilbyflow-reweight-real = "bilbyflow.scripts.reweight_real:main"
-bilbyflow-reweight-injections = "bilbyflow.scripts.reweight_injections:main"
-bilbyflow-era-test = "bilbyflow.scripts.era_test:main"
-bilbyflow-diagnostics = "bilbyflow.scripts.diagnostics:main"
+# not yet in the repo:
+# bilbyflow-reweight-real = "bilbyflow.scripts.reweight_real:main"
+# bilbyflow-reweight-injections = "bilbyflow.scripts.reweight_injections:main"
+# bilbyflow-era-test = "bilbyflow.scripts.era_test:main"
+
 
 [project.urls]
 Homepage = "https://github.com/LiamCPinchbeck/BilbyFlow"
