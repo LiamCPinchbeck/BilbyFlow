@@ -52,42 +52,38 @@ def npe_sample_and_logprob(posterior, x_npe, std, n_samples, cfg, tc=None,
     M = int(n_samples * oversample) if prior_swap else n_samples
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    posterior.posterior_estimator.to(device)
-    posterior._device = device
-    prior = posterior.prior
-    if hasattr(prior, "base_dist"):
-        prior.base_dist.low = prior.base_dist.low.to(device)
-        prior.base_dist.high = prior.base_dist.high.to(device)
+    if next(posterior.parameters()).device.type != device:
+        posterior.to(device)
+    std = posterior.embedding.std
 
     _t0 = time.perf_counter()
-    x_t = torch.tensor(x_npe).unsqueeze(0)
-    x_norm_dev = std.normalise_x(x_t).to(device)
+    x_dev = torch.tensor(x_npe).unsqueeze(0).to(device)    # raw, not normalised
 
     BATCH = 5000
     with torch.no_grad():
+        posterior.pin(x_dev)
         sample_chunks = []
         for start in range(0, M, BATCH):
-            n = min(BATCH, M - start)
+            n_chunk = min(BATCH, M - start)
             sample_chunks.append(
-                posterior.sample((n,), x=x_norm_dev, reject_outside_prior=True).cpu())
+                posterior.sample(n_chunk, x_dev).cpu())
         samples_norm = torch.cat(sample_chunks, dim=0)
 
         lq_chunks = []
         for start in range(0, M, BATCH):
-            chunk = samples_norm[start:start + BATCH].to(device)
-            lq_chunks.append(posterior.log_prob(chunk, x=x_norm_dev).cpu().detach())
+            chunk = samples_norm[start:start+BATCH].to(device)
+            lq_chunks.append(
+                posterior.log_prob(chunk, x_dev).cpu().detach())
         log_q_norm = torch.cat(lq_chunks).numpy()
-    posterior.posterior_estimator.to("cpu")
-    if device == "cuda":
-        torch.cuda.empty_cache()
-
+        posterior.unpin()
+    # model stays resident on the GPU across events — the per-event
 
 
     if proposal_noise > 0.0:
         sigma = float(proposal_noise)
         k = int(proposal_noise_k)
         samples_norm = samples_norm + torch.randn_like(samples_norm) * sigma
-        x_norm_cpu = std.normalise_x(x_t)
+        x_cpu = torch.tensor(x_npe).unsqueeze(0)
         lps = np.empty((k, samples_norm.shape[0]))
         with torch.no_grad():
             for j in range(k):
@@ -95,7 +91,7 @@ def npe_sample_and_logprob(posterior, x_npe, std, n_samples, cfg, tc=None,
                 for start in range(0, len(shifted), BATCH):
                     chunk = shifted[start:start + BATCH]
                     lps[j, start:start + len(chunk)] = posterior.log_prob(
-                        chunk, x=x_norm_cpu).detach().numpy()
+                        chunk, x_cpu).detach().numpy()
         log_q_norm = logsumexp(lps, axis=0) - np.log(k)
 
 
@@ -184,10 +180,6 @@ def npe_sample_and_logprob(posterior, x_npe, std, n_samples, cfg, tc=None,
 
     print(f"Flow internal samples gen time: {time.perf_counter() - _t0:.3f}s")
 
-    posterior.posterior_estimator.to("cpu")
-    posterior._device = "cpu"
-    if hasattr(posterior.prior, "base_dist"):
-        posterior.prior.base_dist.low = posterior.prior.base_dist.low.to("cpu")
-        posterior.prior.base_dist.high = posterior.prior.base_dist.high.to("cpu")
-
+    # model stays resident on the GPU across events — the per-event
+    # .to("cpu") + empty_cache round trip costs ~1-2 s for nothing
     return samples_phys, log_q, swap_info
