@@ -26,10 +26,6 @@ What each file covers:
 | `test_flows.py` | `log_prob`/`sample` shapes, one-context-many-draws, kwargs reaching zuko, prior-box rejection, `set_bounds` after construction, the custom-flow contract |
 | `test_npe.py` | all 36 embedding×flow pairs construct and run, context-mismatch errors, one-x-many-theta broadcast, `pin()` agreeing with the unpinned path, gradients reaching both halves, save/load round-trip |
 
-Add a case whenever a bug is found: the register in
-`package_architecture_report.html` lists defects that a construction test
-would have caught immediately.
-
 
 
 ## Broader test files
@@ -50,7 +46,6 @@ pytest tests -m "not slow"     # the fast suite, every push
 pytest tests                   # everything, before a real run
 pytest tests/test_packing.py   # after touching canonical.py or embedding.py
 ```
-
 
 and in the CI workflow, one can run the slow ones explicitly:
 
