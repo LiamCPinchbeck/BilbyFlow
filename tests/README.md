@@ -36,12 +36,12 @@ would have caught immediately.
 
 These tests cover the actual implementations of the above.
 
-| file | catches | cost |
+| file | catches |
 |---|---|---|
-| `test_packing.py` | canonical packs x one way, the embedding reads it another — same width, no error, wrong science | <1 s |
-| `test_config_keys.py` | a config key that silently does nothing (`x_blocks`, `flow_dropout`, `final_stage_flow_dropout` have all been dead at some point) | ~5 s |
-| `test_install.py` | broken subpackage imports, NUL bytes, empty `__all__`, console scripts pointing at a renamed `main()`, a missing runtime dependency | ~20 s |
-| `test_roundtrips.py` | sky reparameterisation, theta normalisation, whitening — the transforms under every posterior | <1 s |
+| `test_packing.py` | canonical packs x one way, the embedding reads it another — same width, no error, wrong science | 
+| `test_config_keys.py` | a config key that silently does nothing (`x_blocks`, `flow_dropout`, `final_stage_flow_dropout` have all been dead at some point) | 
+| `test_install.py` | broken subpackage imports, NUL bytes, empty `__all__`, console scripts pointing at a renamed `main()`, a missing runtime dependency | 
+| `test_roundtrips.py` | sky reparameterisation, theta normalisation, whitening — the transforms under every posterior | 
 
 ### running
 
@@ -51,16 +51,8 @@ pytest tests                   # everything, before a real run
 pytest tests/test_packing.py   # after touching canonical.py or embedding.py
 ```
 
-Add to `pyproject.toml`:
 
-```toml
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = ["slow: end-to-end runs (minutes, not seconds)"]
-addopts = "-q -m 'not slow'"
-```
-
-and in the CI workflow, run the slow ones explicitly:
+and in the CI workflow, one can run the slow ones explicitly:
 
 ```yaml
       - name: pytest
@@ -69,6 +61,3 @@ and in the CI workflow, run the slow ones explicitly:
         run: pytest tests -v -m slow
 ```
 
-### the one to run after any change to data or nn
-
-`test_packing.py`. Everything else fails loudly; a packing mismatch does not.

@@ -51,3 +51,8 @@ where = ["src"]
 
 #[project.entry-points."bilby.samplers"]
 #bilbyflow = "bilbyflow.plugin:BilbyFlow"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end runs (minutes, not seconds)"]
+addopts = "-q -m 'not slow'"
