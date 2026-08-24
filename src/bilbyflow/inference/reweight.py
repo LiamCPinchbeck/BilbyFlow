@@ -373,7 +373,8 @@ def reweight_event(
 
     # headline stats: idx_final (equal-weight, unique) when two-stage ran,
     # else PSIS on the stage-1 weights.
-    if ts is not None and len(base_extra.get("idx_final", [])) > 0:
+    n_eff_psis = None            # set only on the PSIS path with khat < 0.7
+    if ts is not None and len(base_extra.get("idx_final", [])) > 0:        
         n_final = int(base_extra["n_unique_final"])
         n_eff = float(ts["kish2"] * len(base_extra["idx_stage1"]) / 100.0)
         khat = float(ts["khat2"] if ts.get("khat2") is not None
@@ -394,17 +395,25 @@ def reweight_event(
                 log_w_use, smoothed = np.asarray(log_w_smooth), True
             except ImportError:
                 pass
-        log_n_eff = 2 * logsumexp(log_w_use) - logsumexp(2 * log_w_use)
-        n_eff = np.exp(log_n_eff)
 
-
+        # Two ESS numbers answering two questions:
+        #   n_eff_raw   raw weights — proposal quality (Dingo-comparable)
+        #   n_eff_psis  smoothed weights (khat < 0.7 only) — the variance
+        #               proxy for the PSIS-smoothed estimates
+        # HEADLINE n_eff = psis when the smoothing is trustworthy, raw
+        # otherwise. NOTE this makes the headline discontinuous at
+        # khat = 0.7 and non-comparable to raw-reporting pipelines —
+        # n_eff_raw is always in the result dict for the paper table.
+        n_eff_psis = (float(np.exp(2 * logsumexp(log_w_use)
+                                   - logsumexp(2 * log_w_use)))
+                      if smoothed else None)
+        n_eff = n_eff_psis if n_eff_psis is not None else n_eff_raw
 
     base["log_weight_smoothed"] = log_w_use if smoothed else None
     base["psis_smoothed"] = smoothed
     base["n_eff_raw"] = n_eff_raw
-
-
-
+    base["n_eff_psis"] = n_eff_psis
+        
     # SNR bookkeeping at the published MAP and the max-weight posterior sample
     snr = {}
     if map_params is not None:
@@ -421,6 +430,7 @@ def reweight_event(
 
     if snr:
         print("  SNR  " + "  ".join(f"{k}={v:.1f}" for k, v in snr.items()))
+
 
     return dict(n_eff=float(n_eff), efficiency=float(n_eff / n_valid * 100),
                 n_valid=n_valid, khat=khat, **snr, **base)

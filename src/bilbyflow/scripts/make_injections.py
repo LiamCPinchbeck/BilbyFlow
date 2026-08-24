@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""
-make_bilby_injections.py — pure-bilby synthetic events in the REAL-DATA format.
+r"""
+make_injections.py -- pure-bilby synthetic events in the REAL-DATA format.
 
 Generates injections using ONLY bilby (waveforms, projection, noise, SNR) and
 writes them as the same .npy files the real-data pipeline consumes:
@@ -75,7 +75,7 @@ def build_priors(cfg, gps):
 
 def psd_for(det, cfg, bank, rng):
     """(frequency_array, psd_array) — from the bank pickle if given, else
-    bilby's default aLIGO PSD sampled on the analysis grid."""
+    bilby's default aLIGO PSD."""
     duration = float(cfg["duration"])
     sr = int(cfg["sampling_frequency"])
     f_min = float(cfg["f_min"])
@@ -90,7 +90,11 @@ def psd_for(det, cfg, bank, rng):
         psd = np.asarray(psd, dtype=np.float64)
     # noise generation needs finite PSD everywhere: extend flat below f_min
     good = np.isfinite(psd) & (psd > 0)
-    anchor = psd[good & (freq >= f_min)][0]
+    usable = psd[good & (freq >= f_min)]
+    if usable.size == 0:
+        raise ValueError(f"{det}: PSD has no usable in-band bins "
+                         f"(all inf/zero above {f_min} Hz)")
+    anchor = usable[0]
     psd[~good] = anchor
     psd[freq < f_min] = anchor
     return freq, psd
@@ -187,7 +191,7 @@ def main():
         # one PSD per detector per event (era-realistic when bank given)
         psds = {d: psd_for(d, cfg, bank, rng) for d in ("H1", "L1")}
 
-        # ── on-source: bilby noise + bilby injection ──
+        # -- on-source: bilby noise + bilby injection --
         ifos = []
         ok = True
         net_snr2 = 0.0
@@ -220,7 +224,7 @@ def main():
             save_strain(os.path.join(args.data_dir, f"{name}_{ifo.name}.npy"),
                         on_start, dt, strain)
 
-        # ── off-source noise file (independent realisation, same PSDs) ──
+        # -- off-source noise file (independent realisation, same PSDs) --
         for det in ("H1", "L1"):
             freq, psd = psds[det]
             noise, _ = coloured_noise_td(det, freq, psd, args.noise_duration,
@@ -242,6 +246,15 @@ def main():
               f"(draw {tries})")
         made += 1
 
+    if made == 0:
+        raise SystemExit(
+            f"no injections passed the gate after {tries} draws "
+            f"(min_snr={args.min_snr}, max_snr={args.max_snr}, "
+            f"dl_max={args.dl_max}). Loosen the SNR window or lower dl_max.")
+    if made < args.n_events:
+        print(f"WARNING: only {made}/{args.n_events} events after {tries} "
+              f"draws -- the SNR gate is tight for this dL range")
+
     events = [f"INJ_{tag}_{i:03d}" for i in range(made)]
     events_file = os.path.join(args.data_dir, f"events_{tag}.txt")
     with open(events_file, "w") as f:
@@ -251,10 +264,10 @@ def main():
     print(f"batch tag: {tag}")
     print(f"event list: {events_file}")
     print("\nrun the UNMODIFIED real-data script on the whole batch:")
-    print(f"  python -m bilbyflow.scripts.reweight_real $MODEL \\")
-    print(f"      --data-dir {args.data_dir} --noise-data-dir {args.noise_data_dir} \\")
-    print(f"      --events $(cat {events_file}) \\")
-    print(f"      <same flags as your real-event runs>")
+    print(f"""  python -m bilbyflow.scripts.reweight_real $MODEL \\
+      --data-dir {args.data_dir} --noise-data-dir {args.noise_data_dir}\\
+      --events $(cat {events_file}) \\
+      <same flags as your real-event runs>""")
 
 
 if __name__ == "__main__":

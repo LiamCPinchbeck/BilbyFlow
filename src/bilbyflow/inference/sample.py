@@ -158,12 +158,16 @@ def npe_sample_and_logprob(posterior, x_npe, std, n_samples, cfg, tc=None,
 
 
 
+        if not np.isfinite(log_r).any():
+            raise RuntimeError("prior swap: every draw is outside the dL "
+                               "prior box — the flow proposal is broken")
         log_r -= log_r[np.isfinite(log_r)].max()
         w_r = np.exp(log_r)
         w_r /= w_r.sum()
         ess_swap = 1.0 / np.sum(w_r ** 2) / len(w_r) * 100
         rng_sir = np.random.default_rng(int(seed))
         idx = rng_sir.choice(len(w_r), size=n_samples, replace=True, p=w_r)
+        uniq, inv = np.unique(idx, return_inverse=True)   # duplicate map
         log_Zr = np.log(np.mean(np.exp(log_r)))
 
         samples_phys = samples_phys[idx]
@@ -172,10 +176,11 @@ def npe_sample_and_logprob(posterior, x_npe, std, n_samples, cfg, tc=None,
               + (f" (incl SNR-weight correction rho0={snr_rho0})" if snr_rho0 > 0 else ""))
         swap_info = dict(prior_swap_ess=float(ess_swap),
                          prior_swap_oversample=int(oversample),
-                         prior_swap_n_draw=int(M))
+                         prior_swap_n_draw=int(M),
+                         n_unique=int(len(uniq)),
+                         sir_inverse=inv.copy())   # for honest downstream ESS
     else:
         swap_info = {}
-
 
 
     print(f"Flow internal samples gen time: {time.perf_counter() - _t0:.3f}s")
