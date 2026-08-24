@@ -188,7 +188,7 @@ def main():
                 truths = cached.get("truths")
                 published = cached.get("published")
                 print(f"  CACHED: eff={result['efficiency']:.1f}%, "
-                      f"n_eff={result['n_eff']:.0f}, k\u0302={result['khat']:.2f}")
+                      f"n_eff={result['n_eff']:.0f}, k hat={result['khat']:.2f}")
                 if published_array is not None and truths is not None:
                     plot_reweighted_vs_published(
                         npe_samples, result, published_array, truths, param_names,
@@ -276,7 +276,7 @@ def main():
         result["noise_var_q"] = det_var_q
 
         print(f"  n_eff: {result['n_eff']:.0f} / {result['n_valid']} ({result['efficiency']:.1f}%)")
-        print(f"  PSIS k\u0302: {result['khat']:.2f}")
+        print(f"  PSIS k hat: {result['khat']:.2f}")
         if "eff_total" in result:
             print(f"  2-stage: eff1={result['eff_stage1']:.1f}% "
                   f"eff2={result['eff_stage2']:.1f}% total={result['eff_total']:.2f}% "
@@ -319,7 +319,7 @@ def main():
     if all_results:
         plot_summary(all_results, f"{out_dir}/summary.png")
         print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
-        print(f"{'Event':>25} {'PSIS%':>8} {'2stg%':>8} {'n_eff':>8} {'k\u0302':>7}")
+        print(f"{'Event':>25} {'PSIS%':>8} {'2stg%':>8} {'n_eff':>8} {'k hat':>7}")
         for r in all_results:
             eff_2s = r.get("eff_total", r["efficiency"])
             n_final = len(r["idx_final"]) if "idx_final" in r else int(r["n_eff"])
@@ -334,7 +334,7 @@ def main():
             f.write(f"[{PIPELINE_TAG}]\nModel: {args.npe_dir}\n")
             f.write(f"Marginalized: {[p for p in MARGABLE if flags[p]]} (synth={synth})\n")
             f.write(f"Samples/event: {args.n_samples}\n\n")
-            f.write(f"{'Event':>25} {'PSIS%':>8} {'2stg%':>8} {'k\u0302':>7}\n")
+            f.write(f"{'Event':>25} {'PSIS%':>8} {'2stg%':>8} {'k hat':>7}\n")
             for r in all_results:
                 eff_2s = r.get("eff_total", r["efficiency"])
                 f.write(f"{str(r['event']):>25} {r['efficiency']:>8.2f} "
