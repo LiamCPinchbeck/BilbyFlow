@@ -12,7 +12,7 @@ data.canonical at module level — canonical imports this module).
 """
 
 import numpy as np
-import yaml
+import yaml, os
 
 __all__ = [
     "load_config", "get_prior_bounds",
@@ -22,6 +22,13 @@ __all__ = [
 
 
 def load_config(path):
+    # accept a run directory or the yaml itself: train.py passes a file,
+    # reweight_real.py passes the model dir
+    if os.path.isdir(path):
+        print("Path given is a directory, presuming config name is `config.yaml`.")
+        path = os.path.join(path, "config.yaml")
+    if not os.path.exists(path):
+        raise SystemExit(f"no config at {path}")
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
