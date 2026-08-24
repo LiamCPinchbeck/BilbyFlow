@@ -33,7 +33,7 @@ What each file covers:
 These tests cover the actual implementations of the above.
 
 | file | catches |
-|---|---|---|
+|---|---|
 | `test_packing.py` | canonical packs x one way, the embedding reads it another — same width, no error, wrong science | 
 | `test_config_keys.py` | a config key that silently does nothing (`x_blocks`, `flow_dropout`, `final_stage_flow_dropout` have all been dead at some point) | 
 | `test_install.py` | broken subpackage imports, NUL bytes, empty `__all__`, console scripts pointing at a renamed `main()`, a missing runtime dependency | 
