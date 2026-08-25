@@ -17,4 +17,10 @@ We will endeavour to make this clear within the relevant pages.
    :caption: Contents:  
 
    tutorials/QuickStart
+   tutorials/Introductory_Theory
+   tutorials/TrainingAFlow
+   tutorials/OnTheFlyGWDataset
+   tutorials/StrainEmbedding
+   tutorials/ConditionalFlow
+   tutorials/NPE
 
