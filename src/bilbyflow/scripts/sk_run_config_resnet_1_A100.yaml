@@ -15,7 +15,7 @@ waveform_approximant: IMRPhenomXPHM
 sampling_frequency: 2048
 
 batch_size: 4096            # EFFECTIVE batch -- optimisation semantics unchanged
-micro_batch_size: 2048       # per-forward size. P100 16GB: start 128, try 256 if
+micro_batch_size: 256       # per-forward size. P100 16GB: start 256, try 128 if you run into memory issues
                             
 val_eval_chunk: 512         # val NLL chunk; val tensors now stay on CPU (E2)
 fft_complex64: true      
