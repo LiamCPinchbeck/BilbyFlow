@@ -37,8 +37,8 @@ download = ["gwpy>=3.0", "gwosc>=0.7"]
 bilbyflow-train = "bilbyflow.scripts.train:main"
 bilbyflow-reweight-real = "bilbyflow.scripts.reweight_real:main"
 bilbyflow-reweight-injections = "bilbyflow.scripts.reweight_injections:main"
-# not yet in repo
-# bilbyflow-download-noise = "bilbyflow.scripts.download_noise:main"
+bilbyflow-download-noise = "bilbyflow.scripts.download_noise:main"
+
 
 
 [project.urls]
