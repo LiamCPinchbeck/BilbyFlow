@@ -27,16 +27,16 @@ import numpy as np
 import torch
 import yaml
  
-from ..io.config import load_config, get_reference_detector_data
-from ..coordinates.sky import samples_detector_to_radec
-from ..coordinates.params import dL_to_physical
-from ..data.dataset import OnTheFlyGWDataset, generate_fixed_dataset
-from ..data.standardiser import check_aux_stats, check_amp_stats
-from ..data.banks import (precompute_waveforms, precompute_sky_bank,
+from bilbyflow.io.config import load_config, get_reference_detector_data
+from bilbyflow.coordinates.sky import samples_detector_to_radec
+from bilbyflow.coordinates.params import dL_to_physical
+from bilbyflow.data.dataset import OnTheFlyGWDataset, generate_fixed_dataset
+from bilbyflow.data.standardiser import check_aux_stats, check_amp_stats
+from bilbyflow.data.banks import (precompute_waveforms, precompute_sky_bank,
                           load_or_compute)
-from ..nn.aux_head import AUX_NAMES, N_AUX, AuxHead
-from ..training.trainer import custom_train_npe
-from ..plotting.training import plot_losses
+from bilbyflow.nn.aux_head import AUX_NAMES, N_AUX, AuxHead
+from bilbyflow.training.trainer import custom_train_npe
+from bilbyflow.plotting.training import plot_losses
 from .utils import (run_inference, plot_corner_fig, pp_test,
                     plot_aux_diagnostics, run_diagnostics,
                     print_run_banner, make_out_dir, build_val_waveforms,

@@ -27,11 +27,11 @@ from corner import corner
 import time
 import pickle
 
-from ..coordinates.sky import samples_detector_to_radec
-from ..coordinates.params import dL_to_physical
-from ..data.dataset import generate_fixed_dataset
-from ..nn.aux_head import AUX_NAMES, N_AUX
-from ..nn.embedding import Conv1dEmbedding, Conv1dResNetEmbedding, ResNetEmbedding
+from bilbyflow.coordinates.sky import samples_detector_to_radec
+from bilbyflow.coordinates.params import dL_to_physical
+from bilbyflow.data.dataset import generate_fixed_dataset
+from bilbyflow.nn.aux_head import AUX_NAMES, N_AUX
+from bilbyflow.nn.embedding import Conv1dEmbedding, Conv1dResNetEmbedding, ResNetEmbedding
 
 __all__ = ["run_inference", "plot_corner_fig", "pp_test",
            "plot_aux_diagnostics", "run_diagnostics",
@@ -312,7 +312,7 @@ DATA_FILES = ["waveforms.pkl", "sky_bank.pkl", "psd_bank.pkl",
 
 
 def print_run_banner(cfg):
-    from ..inference.priors import make_prior_dict
+    from bilbyflow.inference.priors import make_prior_dict
     try:
         pr = make_prior_dict(cfg)
         print("[priors] actual families: "
@@ -368,7 +368,7 @@ def make_out_dir(cfg, args):
 
 def build_val_waveforms(cfg):
     """Disjoint-intrinsics val/test waveform bank (seed 4242)."""
-    from ..data.banks import precompute_waveforms
+    from bilbyflow.data.banks import precompute_waveforms
     cfg_val = dict(cfg)
     cfg_val["n_waveforms"] = int(cfg.get("n_val_waveforms", 5000))
     return precompute_waveforms(cfg_val, seed_val=4242)
@@ -377,8 +377,8 @@ def build_val_waveforms(cfg):
 def build_psd_bank(cfg, OUT, noise_data_dir):
     """PSD bank from real segments (cached), or None for the fixed bilby PSD.
     GP sampling (psd_gp_dir) is retired -- fail loudly up front."""
-    from ..data.banks import load_or_compute
-    from ..data.psd import precompute_psd_bank_from_segments
+    from bilbyflow.data.banks import load_or_compute
+    from bilbyflow.data.psd import precompute_psd_bank_from_segments
     if cfg.get("psd_gp_dir"):
         raise SystemExit("psd_gp_dir (GP-sampled PSD bank) is retired; use "
                          "noise_data_dir with real segments instead.")
@@ -395,7 +395,7 @@ def build_psd_bank(cfg, OUT, noise_data_dir):
 
 def build_noise_bank(cfg, OUT, noise_data_dir):
     """Real-noise segment bank when noise_source=real or embed_consistency."""
-    from ..data.banks import precompute_noise_segment_bank, load_or_compute
+    from bilbyflow.data.banks import precompute_noise_segment_bank, load_or_compute
     need = (str(cfg.get("noise_source", "gaussian_whitened")).lower() == "real"
             or bool(cfg.get("embed_consistency", False)))
     if not need:
@@ -413,7 +413,7 @@ def build_noise_bank(cfg, OUT, noise_data_dir):
 
 def fit_standardiser(dataset, cfg, param_names):
     """Fit the Standardiser on a fresh full-range draw (+ aux stats)."""
-    from ..data.standardiser import Standardiser
+    from bilbyflow.data.standardiser import Standardiser
     print("Computing standardisation (theta full range, + aux stats)...")
     dataset.set_dL_cap(None)
     xs, ts, _sids, auxs = generate_fixed_dataset(
@@ -445,12 +445,12 @@ def build_npe(cfg, std=None, embedding_cls=None, flow_cls=None):
 
     embedding_cls / flow_cls override the config for custom architectures —
     pass the SAME ones at reweighting time that you trained with."""
-    from ..nn.embedding import (Conv1dEmbedding, Conv1dResNetEmbedding,
+    from bilbyflow.nn.embedding import (Conv1dEmbedding, Conv1dResNetEmbedding,
                                 ResNetEmbedding)
-    from ..nn.flow import NSF
-    from ..npe import NPE
-    from ..io.config import get_prior_bounds
-    from ..coordinates.sky import MAX_DT_HL
+    from bilbyflow.nn.flow import NSF
+    from bilbyflow.npe import NPE
+    from bilbyflow.io.config import get_prior_bounds
+    from bilbyflow.coordinates.sky import MAX_DT_HL
     import numpy as np
 
     etype = cfg.get("embedding_type", "conv1d_resnet")

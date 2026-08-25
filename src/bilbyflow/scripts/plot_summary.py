@@ -39,11 +39,11 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 
-from ..plotting.summary import (
+from bilbyflow.plotting.summary import (
     load_from_pkls, load_from_txt, load_sharpness,
     plot_sorted, plot_theoretical_only, plot_sharpness, plot_two_stage,
 )
-from ..diagnostics.psis import psis_reliability_report
+from bilbyflow.diagnostics.psis import psis_reliability_report
 
 # Enforce after all bilbyflow imports
 matplotlib.rcParams['text.usetex'] = False
@@ -328,7 +328,7 @@ def export_extras_csv(path, stem):
     """Two-stage breakdown and sharpness for ONE directory -- the datasets
     behind the panels that have no multi-series overlay."""
     try:
-        from ..plotting.summary import load_two_stage
+        from bilbyflow.plotting.summary import load_two_stage
         ts = load_two_stage(path)
         if ts:
             _write_csv(f"{stem}_two_stage.csv",
@@ -344,7 +344,7 @@ def export_extras_csv(path, stem):
     except Exception as e:
         print(f"  two-stage CSV skipped: {e}")
     try:
-        from ..plotting.summary import load_sharpness
+        from bilbyflow.plotting.summary import load_sharpness
         sh = load_sharpness(path)
         if sh:
             _write_csv(f"{stem}_sharpness.csv",

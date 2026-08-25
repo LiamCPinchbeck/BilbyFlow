@@ -43,18 +43,18 @@ import torch
 import bilby
 from bilby.core.utils.random import seed as bilby_seed
 
-from ..io.config import load_config, grid_quantities
-from ..data.canonical import build_x_full
-from ..data.noise import build_noise_index
-from ..inference.priors import make_prior_dict, make_injection_priors
-from ..inference.injections import (SIDEREAL_DAY, draw_injection_params)
-from ..inference.sample import npe_sample_and_logprob
-from ..inference.reweight import reweight_event, marg_flags, MARGABLE
-from ..plotting.corner import (plot_reweighted_npe_only,
+from bilbyflow.io.config import load_config, grid_quantities
+from bilbyflow.data.canonical import build_x_full
+from bilbyflow.data.noise import build_noise_index
+from bilbyflow.inference.priors import make_prior_dict, make_injection_priors
+from bilbyflow.inference.injections import (SIDEREAL_DAY, draw_injection_params)
+from bilbyflow.inference.sample import npe_sample_and_logprob
+from bilbyflow.inference.reweight import reweight_event, marg_flags, MARGABLE
+from bilbyflow.plotting.corner import (plot_reweighted_npe_only,
                                plot_recovered_extrinsics_vs_truth)
-from ..plotting.weights import plot_weight_diagnostics, plot_summary
+from bilbyflow.plotting.weights import plot_weight_diagnostics, plot_summary
 from .reweight_real import load_trained_posterior
-from ..data.standardiser import Standardiser  # noqa: F401  (pickle compat: standardiser.pkl records __main__.Standardiser)
+from bilbyflow.data.standardiser import Standardiser  # noqa: F401  (pickle compat: standardiser.pkl records __main__.Standardiser)
 
 PIPELINE_TAG = ("v4.5: psd-scope-selectable + noise-var-q + psis-smoothing "
                 "+ synthetic-extrinsics-v5")

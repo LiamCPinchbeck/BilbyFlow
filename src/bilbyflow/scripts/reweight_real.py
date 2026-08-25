@@ -32,19 +32,19 @@ import torch
 import bilby
 from bilby.core.utils.random import seed as bilby_seed
 
-from ..io.config import load_config, grid_quantities
-from ..io.strain import (GWOSC_TRIGGER_TIMES, find_events_from_data,
+from bilbyflow.io.config import load_config, grid_quantities
+from bilbyflow.io.strain import (GWOSC_TRIGGER_TIMES, find_events_from_data,
                          fetch_real_strain_and_build_ifos)
-from ..io.samples import (find_sample_files, load_published_samples,
+from bilbyflow.io.samples import (find_sample_files, load_published_samples,
                           extract_map_params, published_samples_to_array)
-from ..data.canonical import build_x_full
-from ..inference.priors import make_prior_dict
-from ..inference.sample import npe_sample_and_logprob
-from ..inference.reweight import reweight_event, is_geocent_inferred, marg_flags, MARGABLE
-from ..plotting.corner import (plot_reweighted_vs_published, plot_reweighted_npe_only,
+from bilbyflow.data.canonical import build_x_full
+from bilbyflow.inference.priors import make_prior_dict
+from bilbyflow.inference.sample import npe_sample_and_logprob
+from bilbyflow.inference.reweight import reweight_event, is_geocent_inferred, marg_flags, MARGABLE
+from bilbyflow.plotting.corner import (plot_reweighted_vs_published, plot_reweighted_npe_only,
                                plot_recovered_extrinsics_vs_published)
-from ..plotting.weights import plot_weight_diagnostics, plot_summary
-from ..data.standardiser import Standardiser
+from bilbyflow.plotting.weights import plot_weight_diagnostics, plot_summary
+from bilbyflow.data.standardiser import Standardiser
 from .utils import build_npe
 
 PIPELINE_TAG = "v4.0: hp15 + window-first + log-dL + synthetic-extrinsics(phase,psi,tc)"

@@ -38,7 +38,7 @@ bilbyflow-train = "bilbyflow.scripts.train:main"
 bilbyflow-reweight-real = "bilbyflow.scripts.reweight_real:main"
 bilbyflow-reweight-injections = "bilbyflow.scripts.reweight_injections:main"
 bilbyflow-download-noise = "bilbyflow.scripts.download_noise:main"
-
+bilbyflow-init = "bilbyflow.scripts.init_scripts:main"
 
 
 [project.urls]

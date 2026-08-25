@@ -15,7 +15,7 @@ Usage:
 import argparse
 import os
 
-from ..plotting.injections import (resolve_and_load, plot_sorted_injections,
+from bilbyflow.plotting.injections import (resolve_and_load, plot_sorted_injections,
                                    plot_snr_panel)
 
 
