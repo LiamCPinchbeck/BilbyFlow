@@ -1,4 +1,4 @@
-# ── BilbyFlow training config v4.0 ─────────────────────────────────────────
+# -- BilbyFlow training config 0 -----------------------------------------
 
 output_prefix: big_data/PSD_conditioned/psd_cond
 embedding_type: conv1d_resnet
@@ -14,9 +14,11 @@ duration: 4.0
 waveform_approximant: IMRPhenomXPHM
 sampling_frequency: 2048
 
-batch_size: 4096            # EFFECTIVE batch -- optimisation semantics unchanged
-micro_batch_size: 256       # per-forward size. P100 16GB: start 256, try 128 if you run into memory issues
+batch_size: 2048            # EFFECTIVE batch, paper used 4096
+micro_batch_size: 256       # per-forward size. P100 16GB: start 256, try 128 if you run into memory issues. 
+                            # for the paper we had access to A100 GPUs and could raise the micro_batch_size to 2048
                             
+
 val_eval_chunk: 512         # val NLL chunk; val tensors now stay on CPU (E2)
 fft_complex64: true      
 consistency_chunk: 256     # was 4096 -- transfer/memory guard on 16GB
@@ -24,7 +26,7 @@ prefetch_factor: 4
 num_workers: 16             # raise toward (cores - 2) if CPU isn't already pegged
 
 
-unique_analysis_identifier: Conv1D_ResNet18_v4_ABC_test_1
+unique_analysis_identifier: Conv1D_ResNet18_test_1
 
 dL_param: 'log'        # flow models ln(dL): homoscedastic width (sigma_lnD ~ 1/rho)
 dL_train_alpha: -1     # TRAINING proposal only (physical prior stays alpha=2 in
@@ -33,11 +35,11 @@ dL_train_alpha: -1     # TRAINING proposal only (physical prior stays alpha=2 in
 Mc_param: 'linear'     # option for 'log', but A/B testing still ongoing for whether this improves anything
 Mc_train_alpha: 0
 
-n_standardisation: 20000
-n_test: 20000
-n_val: 20000
-n_waveforms: 1000000
-n_sky_bank: 1000000
+n_standardisation: 10000  # paper used 2e4. Smaller here for comp speed purposes
+n_test: 10000             # paper used 2e4. ^
+n_val: 10000              # paper used 2e4. ^
+n_waveforms: 100000       # paper used 1e6. Smaller here for comp speed purposes
+n_sky_bank: 100000        # paper used 1e6. ^
 
 n_waveform_workers: 0   # 0 = auto (SLURM_CPUS_PER_TASK, else all cores)
 
@@ -67,7 +69,7 @@ embedding_layers:  # only used for embedding_type: mlp
 - 128
 - 64
 
-# ── 12-parameter flow ──────────────────────────────────────────────────────
+# -- 12-parameter flow ------------------------------------------------------
 inferred_parameters:
 - chirp_mass
 - mass_ratio
@@ -114,25 +116,21 @@ priors:
 
 
 training_prior_pad:
-  chirp_mass: {min: 9.5}          # was 7.0  -- see note below
-  luminosity_distance: {max: 5200.0}   # unchanged
+  chirp_mass: {min: 9.5}              # gives a little buffer room
+  luminosity_distance: {max: 5200.0}  # ^
 
 
 psd_bank:
   n_psds: 50000
   eras: null
   asd_floor_factor: 5.0
-  era_weights: {O1: 1, O2: 1, O3a: 1, O3b: 1}
+  era_weights: {O1: 1, O2: 1, O3a: 1, O3b: 1} # equally weighted era
 
-# training noise: gaussian_physical = same Tukey window on the noise as the
-# signal -> matches BOTH the real-event whitening path and the Gaussian
-# likelihood target (no IS penalty from real-noise marginalisation).
 noise_source: gaussian_physical
 real_noise_fraction: 0.0
 real_noise_mix_source: gaussian_physical
 
-# ── Single-run SNR-floor curriculum (unchanged; dL caps still set the SNR
-# floor via the sky bank even though dL is a flow output) ───────────────────
+# Paper used the same curriculum, but roughly doubled the final stage
 curriculum_stages:
   - {dL_max: 800,  epochs: 50,  lr: 5.0e-4, t_max: 50,  patience: 20}
   - {dL_max: 1100, epochs: 40,  lr: 5.0e-4, t_max: 40,  patience: 20}
@@ -140,15 +138,14 @@ curriculum_stages:
   - {dL_max: 2000, epochs: 40,  lr: 1.0e-4, t_max: 40,  patience: 20}
   - {dL_max: 2500, epochs: 40,  lr: 5.0e-5, t_max: 40,  patience: 20}
   - {dL_max: 3500, epochs: 60,  lr: 5.0e-5, t_max: 60,  patience: 50}
-  - {dL_max: 5000, epochs: 100, lr: 1.0e-5, t_max: 110, patience: 50}
+  - {dL_max: 5000, epochs: 100, lr: 1.0e-5, t_max: 110, patience: 50} 
 curriculum_restandardise: x
 
 reuse_files:
 - val_data.pkl
 - test_data.pkl
-# NOTE: do NOT reuse standardiser.pkl from a 13/14-param run -- theta dims changed.
 
-# ── v4.1: auxiliary physics-summary supervision (training scaffold) ────────
+# -- 1: auxiliary physics-summary supervision (training scaffold) --------
 # A small head on the shared embedding regresses 14 noiseless-signal summaries
 # (per-det MF SNR, peak phase, peak time, spectral centroid; dt_HL, SNR ratio,
 # phase difference). Shapes the embedding early; lambda anneals to 0 within
@@ -160,8 +157,7 @@ aux_head_hidden: 128
 aux_n_channels: 256
 log_grad_norms: false
 
-# Final curriculum stage only: set all flow Dropout p to this (sharpness for
-# IS; regularisation there is carried by weight_decay + fresh on-the-fly noise)
+# Final curriculum stage only: set all flow Dropout p to this (sharpness for IS)
 final_stage_flow_dropout: 0.0
 
 
@@ -171,18 +167,18 @@ psd_encoder_out: 64
 psd_context_clip: 10.0
 
 
-# ── v4.3: JEPA embedding consistency (real -> synthetic anchor) ────────────
+# -- 3: JEPA embedding consistency (synthetic -> synthetic anchor) -----
 embed_consistency: true
 consistency_lambda: 0.0
 consistency_frac: 0.02   # fraction of items per batch carrying cons rows.
                          # E[grad] unchanged; expected epoch time
-                         # ~ base + frac * cons_cost: 800 + 0.25*1200 = ~1100 s
+                         # ~ base + frac * cons_cost
 
-# --- v4.4 Amp context switch
+# --- 4 Amp context switch. If unfamiliar LEAVE OFF
 amp_context: false
 
 
-# ── v4.5: multi-draw JEPA (noise-marginalised anchor) ──────────────────
+# -- 5: multi-draw JEPA kwargs ------------------
 consistency_k_synth: 3        # FRESH no_grad synthetic rows (fwd-only, cheap);
                               # + the free main-batch row below = 4 anchors.
                               # Anchor noise ~ 1/sqrt(K): 4 captures most value; 15 buys ~1.6x more.
@@ -191,9 +187,9 @@ consistency_reuse_main: true  # main x is itself a synthetic draw; reuse its cac
                               # embedding as anchor row 0 at zero cost
 consistency_eval_mode: true   # run cons forwards with BN/dropout in eval: at K~8,
                               # train-mode BN running stats would be dominated by
-                              # cons rows. false = v4.3 behaviour for A/B.
+                              # cons rows. false = 3 behaviour for A/B.
 
-# ── v4.6: JEPA stability and hybrid data generation strategy ──────────────────
+# -- 6: JEPA stability and hybrid data generation strategy ------------------
 
 clean_cache_slots: 200000      # 0 = off (pure on-the-fly). Memory: ~slots x 262 KB
                                # (c128) or x 131 KB with fft_complex64: true
@@ -205,12 +201,12 @@ consistency_normalize: true
 
 
 
-# ── v4.7: VICReg stability ──────────────────
+# -- 7: VICReg stability ------------------
 
 vc_reg: true
 vc_gamma: 0.5
 vc_lambda_var: 0.0
 vc_lambda_cov: 0.00
 
-snr_weight_rho0: 8.0        # new
-snr_weight_max: 1.0        # new
+snr_weight_rho0: 8.0
+snr_weight_max: 1.0
