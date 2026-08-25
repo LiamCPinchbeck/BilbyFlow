@@ -26,7 +26,7 @@ def _scripts_dir():
 
 
 # only copy actual runnable scripts, not __init__.py or utils
-_SKIP = {"__init__.py", "utils.py", "__pycache__"}
+_SKIP = {"__init__.py", "__pycache__"}
 
 
 def main():
@@ -42,8 +42,9 @@ def main():
 
     src = _scripts_dir()
     scripts = sorted(f for f in os.listdir(src)
-                     if f.endswith(".py") and f not in _SKIP)
+                     if (f.endswith(".py") or f.endswith(".yaml")) and f not in _SKIP)
 
+    print(scripts)
     if args.list:
         print(f"{len(scripts)} scripts in {src}:")
         for s in scripts:

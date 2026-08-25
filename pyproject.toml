@@ -56,3 +56,6 @@ where = ["src"]
 testpaths = ["tests"]
 markers = ["slow: end-to-end runs (minutes, not seconds)"]
 addopts = "-q -m 'not slow'"
+
+[tool.setuptools.package-data]
+bilbyflow = ["scripts/*.yaml", "scripts/*.yml"]

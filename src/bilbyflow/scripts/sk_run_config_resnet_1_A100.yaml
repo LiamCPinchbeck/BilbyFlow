@@ -1,0 +1,216 @@
+# ── BilbyFlow training config v4.0 ─────────────────────────────────────────
+
+output_prefix: big_data/PSD_conditioned/psd_cond
+embedding_type: conv1d_resnet
+embedding_output_dim: 512
+conv1d_dropout: 0.1
+conv1d_resnet_stem_out: 512
+conv1d_resnet_backbone: resnet18
+
+weight_decay: 0.05
+flow_dropout: 0.05
+
+duration: 4.0
+waveform_approximant: IMRPhenomXPHM
+sampling_frequency: 2048
+
+batch_size: 4096            # EFFECTIVE batch -- optimisation semantics unchanged
+micro_batch_size: 2048       # per-forward size. P100 16GB: start 128, try 256 if
+                            
+val_eval_chunk: 512         # val NLL chunk; val tensors now stay on CPU (E2)
+fft_complex64: true      
+consistency_chunk: 256     # was 4096 -- transfer/memory guard on 16GB
+prefetch_factor: 4
+num_workers: 16             # raise toward (cores - 2) if CPU isn't already pegged
+
+
+unique_analysis_identifier: Conv1D_ResNet18_v4_ABC_test_1
+
+dL_param: 'log'        # flow models ln(dL): homoscedastic width (sigma_lnD ~ 1/rho)
+dL_train_alpha: -1     # TRAINING proposal only (physical prior stays alpha=2 in
+                       # make_prior_dict; IS weights correct the reshape).
+                       # more loud-end coverage, where efficiency dies.
+Mc_param: 'linear'     # option for 'log', but A/B testing still ongoing for whether this improves anything
+Mc_train_alpha: 0
+
+n_standardisation: 20000
+n_test: 20000
+n_val: 20000
+n_waveforms: 1000000
+n_sky_bank: 1000000
+
+n_waveform_workers: 0   # 0 = auto (SLURM_CPUS_PER_TASK, else all cores)
+
+learning_rate: 0.0005
+eta_min: 1.0e-05
+resume_eta_min: 1.0e-05
+resume_learning_rate: 2.0e-05
+
+clip_max_norm: 10.0
+checkpoint_interval: 30
+stop_after_epochs: 100
+max_num_epochs: 200
+t_max: 200
+ref_geocent_time: 1126259462.4
+f_min: 20
+
+# flow capacity (num_bins: sbi default is 10)
+hidden_features: 512
+num_transforms: 64
+num_bins: 24
+
+
+embedding_layers:  # only used for embedding_type: mlp
+- 512
+- 512
+- 256
+- 128
+- 64
+
+# ── 12-parameter flow ──────────────────────────────────────────────────────
+inferred_parameters:
+- chirp_mass
+- mass_ratio
+- luminosity_distance
+- theta_jn
+- ra            # detector-frame: dt_HL
+- dec           # detector-frame: phi_det
+- a_1
+- a_2
+- tilt_1
+- tilt_2
+- phi_12
+- phi_jl
+
+# marginalized in the IS target by synthetic_phase.py; the flow
+# marginalizes them implicitly (they still vary in training data via the sky
+# bank: psi -> fp/fc, geocent -> merger position, phase -> waveform draw).
+nuisance_parameters:
+- phase
+- geocent_time
+- psi
+
+noise_data_dir: /fred/oz233/lpinchbe/BilbyFlow/NoiseGPStuff/noise_data
+
+notes:
+- Clean Run
+
+priors:
+  a_1:    {min: 0.0, max: 0.99, type: uniform}
+  a_2:    {min: 0.0, max: 0.99, type: uniform}
+  chirp_mass: {min: 10.0, max: 80.0, type: uniform}
+  dec:    {min: -1.5707963267948966, max: 1.5707963267948966, type: uniform}
+  geocent_time: {min: -0.11, max: 0.11, type: uniform}
+  luminosity_distance: {min: 100.0, max: 5000.0, type: uniform}
+  mass_ratio: {min: 0.125, max: 1.0, type: uniform}
+  phase:  {min: 0.0, max: 6.283185307179586, type: uniform}
+  phi_12: {min: 0.0, max: 6.283185307179586, type: uniform}
+  phi_jl: {min: 0.0, max: 6.283185307179586, type: uniform}
+  psi:    {min: 0.0, max: 3.141592653589793, type: uniform}
+  ra:     {min: 0.0, max: 6.283185307179586, type: uniform}
+  theta_jn: {min: 0.0, max: 3.141592653589793, type: uniform}
+  tilt_1: {min: 0.0, max: 3.141592653589793, type: uniform}
+  tilt_2: {min: 0.0, max: 3.141592653589793, type: uniform}
+
+
+training_prior_pad:
+  chirp_mass: {min: 9.5}          # was 7.0  -- see note below
+  luminosity_distance: {max: 5200.0}   # unchanged
+
+
+psd_bank:
+  n_psds: 50000
+  eras: null
+  asd_floor_factor: 5.0
+  era_weights: {O1: 1, O2: 1, O3a: 1, O3b: 1}
+
+# training noise: gaussian_physical = same Tukey window on the noise as the
+# signal -> matches BOTH the real-event whitening path and the Gaussian
+# likelihood target (no IS penalty from real-noise marginalisation).
+noise_source: gaussian_physical
+real_noise_fraction: 0.0
+real_noise_mix_source: gaussian_physical
+
+# ── Single-run SNR-floor curriculum (unchanged; dL caps still set the SNR
+# floor via the sky bank even though dL is a flow output) ───────────────────
+curriculum_stages:
+  - {dL_max: 800,  epochs: 50,  lr: 5.0e-4, t_max: 50,  patience: 20}
+  - {dL_max: 1100, epochs: 40,  lr: 5.0e-4, t_max: 40,  patience: 20}
+  - {dL_max: 1500, epochs: 40,  lr: 1.0e-4, t_max: 40,  patience: 20}
+  - {dL_max: 2000, epochs: 40,  lr: 1.0e-4, t_max: 40,  patience: 20}
+  - {dL_max: 2500, epochs: 40,  lr: 5.0e-5, t_max: 40,  patience: 20}
+  - {dL_max: 3500, epochs: 60,  lr: 5.0e-5, t_max: 60,  patience: 50}
+  - {dL_max: 5000, epochs: 100, lr: 1.0e-5, t_max: 110, patience: 50}
+curriculum_restandardise: x
+
+reuse_files:
+- val_data.pkl
+- test_data.pkl
+# NOTE: do NOT reuse standardiser.pkl from a 13/14-param run -- theta dims changed.
+
+# ── v4.1: auxiliary physics-summary supervision (training scaffold) ────────
+# A small head on the shared embedding regresses 14 noiseless-signal summaries
+# (per-det MF SNR, peak phase, peak time, spectral centroid; dt_HL, SNR ratio,
+# phase difference). Shapes the embedding early; lambda anneals to 0 within
+# each stage; head is NEVER used at inference (reweighting scripts unchanged).
+aux_supervision: true # aux head retained as DETACHED probe (diagnostic; zero trunk gradient)
+aux_lambda: 0.5
+aux_anneal_frac: 0.7        # lambda -> 0 by this fraction of each stage
+aux_head_hidden: 128
+aux_n_channels: 256
+log_grad_norms: false
+
+# Final curriculum stage only: set all flow Dropout p to this (sharpness for
+# IS; regularisation there is carried by weight_decay + fresh on-the-fly noise)
+final_stage_flow_dropout: 0.0
+
+
+psd_conditioning: true
+psd_encoder_hidden: [512, 256, 128]
+psd_encoder_out: 64
+psd_context_clip: 10.0
+
+
+# ── v4.3: JEPA embedding consistency (real -> synthetic anchor) ────────────
+embed_consistency: true
+consistency_lambda: 0.0
+consistency_frac: 0.02   # fraction of items per batch carrying cons rows.
+                         # E[grad] unchanged; expected epoch time
+                         # ~ base + frac * cons_cost: 800 + 0.25*1200 = ~1100 s
+
+# --- v4.4 Amp context switch
+amp_context: false
+
+
+# ── v4.5: multi-draw JEPA (noise-marginalised anchor) ──────────────────
+consistency_k_synth: 3        # FRESH no_grad synthetic rows (fwd-only, cheap);
+                              # + the free main-batch row below = 4 anchors.
+                              # Anchor noise ~ 1/sqrt(K): 4 captures most value; 15 buys ~1.6x more.
+consistency_k_real: 2         # grad-bearing rows -- the expensive axis (~3x a fwd row each)
+consistency_reuse_main: true  # main x is itself a synthetic draw; reuse its cached
+                              # embedding as anchor row 0 at zero cost
+consistency_eval_mode: true   # run cons forwards with BN/dropout in eval: at K~8,
+                              # train-mode BN running stats would be dominated by
+                              # cons rows. false = v4.3 behaviour for A/B.
+
+# ── v4.6: JEPA stability and hybrid data generation strategy ──────────────────
+
+clean_cache_slots: 200000      # 0 = off (pure on-the-fly). Memory: ~slots x 262 KB
+                               # (c128) or x 131 KB with fft_complex64: true
+cache_refresh_epochs: 2
+consistency_warmup_epochs: 5
+consistency_skip_above: 25.0
+consistency_normalize: true
+                            # than raw MSE; 0.1 is the new starting point
+
+
+
+# ── v4.7: VICReg stability ──────────────────
+
+vc_reg: true
+vc_gamma: 0.5
+vc_lambda_var: 0.0
+vc_lambda_cov: 0.00
+
+snr_weight_rho0: 8.0        # new
+snr_weight_max: 1.0        # new
