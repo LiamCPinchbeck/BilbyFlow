@@ -1,6 +1,6 @@
 # -- BilbyFlow training config 0 -----------------------------------------
 
-output_prefix: big_data/PSD_conditioned/psd_cond
+output_prefix: smoke_test
 embedding_type: conv1d_resnet
 embedding_output_dim: 512
 conv1d_dropout: 0.1
@@ -92,7 +92,7 @@ nuisance_parameters:
 - geocent_time
 - psi
 
-noise_data_dir: /fred/oz233/lpinchbe/BilbyFlow/NoiseGPStuff/noise_data
+# noise_data_dir: /noise_data_pth
 
 notes:
 - Clean Run

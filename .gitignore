@@ -28,6 +28,8 @@ MANIFEST
 .read_the_docs/
 docs/_build
 .bbflow/
+docs/tutorials/bbflow_testing*
+docs/tutorials/OUTPUTS*
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
