@@ -7,7 +7,7 @@ Welcome to the BilbyFlow documentation!
 =======================================
 
 
-Bulk of documentations are built on top of jupter notebooks. 
+Bulk of documentation is built on top of jupter notebooks. 
 Some should be immediately runnable if you have the code installed, 
 and some will require you to have off-segment data accessable from your working directory.
 We will endeavour to make this clear within the relevant pages.
