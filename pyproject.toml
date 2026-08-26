@@ -25,6 +25,8 @@ dependencies = [
     "arviz>=0.15",
     "pyyaml>=6.0",
     "tqdm",
+    "gwosc",
+    "gwpy"
 ]
 
 [project.optional-dependencies]
