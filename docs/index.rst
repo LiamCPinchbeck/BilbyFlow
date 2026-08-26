@@ -19,6 +19,7 @@ We will endeavour to make this clear within the relevant pages.
    tutorials/QuickStart
    tutorials/Introductory_Theory
    tutorials/TrainingAFlow
+   tutorials/TrainingAFlow_python
    tutorials/OnTheFlyGWDataset
    tutorials/StrainEmbedding
    tutorials/ConditionalFlow
